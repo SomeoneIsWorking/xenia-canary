@@ -2385,6 +2385,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   auto vertex_shader = static_cast<VulkanShader*>(active_vertex_shader());
   if (!vertex_shader) {
     // Always need a vertex shader.
+    // Said out loud: this is the first of a dozen silent `return false`s in
+    // IssueDraw, and a caller sees only "Failed in backend" for all of them.
+    XELOGE("IssueDraw: no active vertex shader (nothing IM_LOADed one)");
     return false;
   }
   pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
