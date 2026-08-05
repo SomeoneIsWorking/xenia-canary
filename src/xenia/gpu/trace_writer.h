@@ -21,10 +21,15 @@
 // function calls (even if they just immediately return) is 0.40-0.60% cpu time
 // total. with inlining they just bloat the caller and negatively impact
 // register allocation for the caller
+// A build may set this itself -- a headless oracle wants traces out of an
+// otherwise optimised build, and rebuilding the world without NDEBUG to get
+// them changes far more than the trace writer.
+#ifndef XE_ENABLE_TRACE_WRITER_INSTRUMENTATION
 #ifdef NDEBUG
 #define XE_ENABLE_TRACE_WRITER_INSTRUMENTATION 0
 #else
 #define XE_ENABLE_TRACE_WRITER_INSTRUMENTATION 1
+#endif
 #endif
 
 namespace xe {

@@ -137,6 +137,12 @@ int TraceDump::Run() {
   player_->WaitOnPlayback();
   EndHostCapture();
 
+  // DIAGNOSTIC (temporary): playback_event_ fires when the trace's packets have
+  // been ISSUED, not when the GPU has finished them and the presenter has
+  // refreshed its guest output. If that race is why every dumped frame is
+  // black, waiting here makes the image appear.
+  xe::threading::Sleep(std::chrono::milliseconds(2000));
+
   // Capture.
   int result = 0;
   ui::Presenter* presenter = graphics_system_->presenter();
