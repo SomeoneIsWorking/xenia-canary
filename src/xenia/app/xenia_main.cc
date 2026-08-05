@@ -589,7 +589,7 @@ void EmulatorApp::EmulatorThread() {
   // (unsupported system, memory issues, etc) this will fail early.
   X_STATUS result = emulator_->Setup(
       emulator_window_->window(), emulator_window_->imgui_drawer(), true,
-      CreateAudioSystem, CreateGraphicsSystem, CreateInputDrivers);
+      false, CreateAudioSystem, CreateGraphicsSystem, CreateInputDrivers);
   if (XFAILED(result)) {
     XELOGE("Failed to setup emulator: {:08X}", result);
     app_context().RequestDeferredQuit();

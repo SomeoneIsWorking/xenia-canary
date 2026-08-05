@@ -102,8 +102,12 @@ int TraceDump::Main(const std::vector<std::string>& args) {
 bool TraceDump::Setup() {
   // Create the emulator but don't initialize so we can setup the window.
   emulator_ = std::make_unique<Emulator>("", "", "", "");
+  // Offscreen presentation, because this tool's whole output is the guest
+  // output image: Run() captures it from the presenter, and without one the
+  // capture cannot even be attempted -- every draw executes and no file is
+  // written, which reads exactly like a trace whose draws all failed.
   X_STATUS result = emulator_->Setup(
-      nullptr, nullptr, false, nullptr,
+      nullptr, nullptr, false, true, nullptr,
       [this]() { return CreateGraphicsSystem(); }, nullptr);
   if (XFAILED(result)) {
     XELOGE("Failed to setup emulator: {:08X}", result);

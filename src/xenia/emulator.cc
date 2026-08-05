@@ -191,7 +191,7 @@ Emulator::~Emulator() {
 
 X_STATUS Emulator::Setup(
     ui::Window* display_window, ui::ImGuiDrawer* imgui_drawer,
-    bool require_cpu_backend,
+    bool require_cpu_backend, bool offscreen_presentation,
     std::function<std::unique_ptr<apu::AudioSystem>(cpu::Processor*)>
         audio_system_factory,
     std::function<std::unique_ptr<gpu::GraphicsSystem>()>
@@ -330,7 +330,7 @@ X_STATUS Emulator::Setup(
   result = graphics_system_->Setup(
       processor_.get(), kernel_state_.get(),
       display_window_ ? &display_window_->app_context() : nullptr,
-      display_window_ != nullptr);
+      display_window_ != nullptr || offscreen_presentation);
   if (result) {
     XELOGE("{}: Failed to setup graphics_system!", __func__);
     return result;
