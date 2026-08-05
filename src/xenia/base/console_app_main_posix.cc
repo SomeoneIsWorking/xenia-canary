@@ -20,7 +20,14 @@ int main(int argc, char** argv) {
   }
 
   // Initialize logging. Needs parsed cvars.
-  // xe::InitializeLogging(entry_info.name);
+  //
+  // NOT optional, though it was commented out here while the windowed entry
+  // point (ui/windowed_app_main_posix.cc) calls it. Logger::AppendLine blocks
+  // when the logger was never initialised, so the first thing that logs hangs
+  // the process -- for the GPU trace tools that is the Vulkan loader chattering
+  // through the debug messenger during EnumeratePhysicalDevices, long before
+  // any trace file is opened, and with no output to say so.
+  xe::InitializeLogging(entry_info.name);
 
   std::vector<std::string> args;
   for (int n = 0; n < argc; n++) {
@@ -29,7 +36,7 @@ int main(int argc, char** argv) {
 
   int result = entry_info.entry_point(args);
 
-  // xe::ShutdownLogging();
+  xe::ShutdownLogging();
 
   return result;
 }
