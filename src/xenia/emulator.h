@@ -181,9 +181,16 @@ class Emulator {
   // to create subsystems as required.
   // Once this function returns a game can be launched using one of the Launch
   // functions.
+  // `offscreen_presentation` asks for a presenter even with no display window.
+  // Presentation is otherwise gated on having a window, which leaves the guest
+  // output image -- the thing the console GPU tools exist to capture -- with
+  // nowhere to be refreshed into, so those tools render every draw and then
+  // write no file. graphics_system.cc already contemplates this case ("May be
+  // needed for offscreen use, such as capturing the guest output image"); it was
+  // simply unreachable from here.
   X_STATUS Setup(
       ui::Window* display_window, ui::ImGuiDrawer* imgui_drawer,
-      bool require_cpu_backend,
+      bool require_cpu_backend, bool offscreen_presentation,
       std::function<std::unique_ptr<apu::AudioSystem>(cpu::Processor*)>
           audio_system_factory,
       std::function<std::unique_ptr<gpu::GraphicsSystem>()>

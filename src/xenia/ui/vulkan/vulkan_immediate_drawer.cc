@@ -180,6 +180,15 @@ std::unique_ptr<ImmediateTexture> VulkanImmediateDrawer::CreateTexture(
     uint32_t width, uint32_t height, ImmediateTextureFilter filter,
     bool is_repeated, const uint8_t* data) {
   assert_not_null(data);
+  if (!width || !height) {
+    // A zero-extent VkImage is invalid, and a driver is entitled to treat the
+    // bind as unreachable -- radv answers it with a deliberate trap, so a
+    // caller's empty texture arrives as a SIGSEGV inside the driver with no
+    // hint of where it came from. Refuse it here, where the caller is named.
+    XELOGE("CreateTexture: refusing a {}x{} texture; extents must be non-zero",
+           width, height);
+    return nullptr;
+  }
   auto texture = std::make_unique<VulkanImmediateTexture>(width, height);
   size_t pending_upload_index;
   if (CreateTextureResource(width, height, filter, is_repeated, data,

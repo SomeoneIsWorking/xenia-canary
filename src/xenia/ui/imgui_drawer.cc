@@ -511,18 +511,62 @@ void ImGuiDrawer::InitializeFonts(const float font_size) {
   font_config.OversampleH = font_config.OversampleV = 2;
   font_config.PixelSnapH = true;
 
+  auto add_embedded_font = [&io, font_size, &font_config]() {
+    io.Fonts->AddFontFromMemoryCompressedBase85TTF(
+        kProggyTinyCompressedDataBase85, font_size, &font_config,
+        io.Fonts->GetGlyphRangesDefault());
+  };
+
   bool is_font_loaded = LoadCustomFont(io, font_config, font_size);
   if (!is_font_loaded) {
     is_font_loaded = LoadWindowsFont(io, font_config, font_size);
   }
 
   if (!is_font_loaded) {
-    io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        kProggyTinyCompressedDataBase85, font_size, &font_config,
-        io.Fonts->GetGlyphRangesDefault());
+    add_embedded_font();
   }
 
-  LoadJapaneseFont(io, font_size);
+  // The CJK font is MERGED on top, and a font file the rasteriser cannot parse
+  // does not fail when it is added -- adding only reads the file. It fails
+  // inside Build(), and a failed Build() leaves the atlas EMPTY: 0x0, no
+  // pixels. That is not a cosmetic loss. SetupFontTexture then asks the
+  // immediate drawer for a 0x0 texture, which is an invalid VkImage, and radv
+  // answers a zero-extent bind with its `unreachable()` trap -- a SIGSEGV on
+  // the UI thread, inside a handler that never returns. The window then has no
+  // menus, the compositor calls it Not Responding, and
+  // CallInUIThread(RunTitle) never runs, so the emulator never launches a
+  // title. Measured here: fontconfig's best CJK match is a variable-weight
+  // .ttc with CFF outlines (NotoSansCJK-VF.ttc), which stb_truetype rejects.
+  //
+  // So the atlas is built EXPLICITLY, and a build failure costs the merged
+  // font rather than every glyph.
+  if (LoadJapaneseFont(io, font_size) && !io.Fonts->Build()) {
+    XELOGE(
+        "The CJK font could not be rasterised, so the whole font atlas failed "
+        "to build. Dropping it -- CJK characters will not display, but the UI "
+        "keeps its own font.");
+    io.Fonts->Clear();
+    if (!(LoadCustomFont(io, font_config, font_size) ||
+          LoadWindowsFont(io, font_config, font_size))) {
+      add_embedded_font();
+    }
+  }
+
+  // Whatever path got here, refuse to continue with an atlas that did not
+  // build: everything downstream of this treats its dimensions as real.
+  if (!io.Fonts->Build() || io.Fonts->TexWidth <= 0 ||
+      io.Fonts->TexHeight <= 0) {
+    XELOGE(
+        "Font atlas still empty after the fallback; retrying with only the "
+        "embedded font.");
+    io.Fonts->Clear();
+    add_embedded_font();
+    if (!io.Fonts->Build()) {
+      XELOGE(
+          "Even the embedded font failed to build an atlas. The UI will have "
+          "no text.");
+    }
+  }
 }
 
 void ImGuiDrawer::SetupFontTexture() {
@@ -533,6 +577,16 @@ void ImGuiDrawer::SetupFontTexture() {
   unsigned char* pixels;
   int width, height;
   io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+  if (width <= 0 || height <= 0 || !pixels) {
+    // Said out loud rather than passed on: a zero-extent texture is an invalid
+    // image everywhere, and the driver is entitled to treat it as impossible.
+    XELOGE(
+        "Font atlas is {}x{} with {} pixel data -- not creating a texture from "
+        "it. The UI will have no text, which is a great deal better than the "
+        "crash a zero-extent image causes in the driver.",
+        width, height, pixels ? "valid" : "no");
+    return;
+  }
   font_texture_ = immediate_drawer_->CreateTexture(
       width, height, ImmediateTextureFilter::kLinear, true,
       reinterpret_cast<uint8_t*>(pixels));

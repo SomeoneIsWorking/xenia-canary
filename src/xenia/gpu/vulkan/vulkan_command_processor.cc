@@ -1441,13 +1441,21 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
 
+  // Named for the same reason IssueDraw's early-outs are: from outside, a swap
+  // that produced no image is indistinguishable from a swap that never
+  // happened, and that is the first question when a trace dump writes no file.
+  XELOGE("IssueSwap: front buffer {:08X}, {}x{}", frontbuffer_ptr,
+         frontbuffer_width, frontbuffer_height);
+
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {
+    XELOGE("IssueSwap: no presenter, so nothing can receive the frame");
     return;
   }
 
   // In case the swap command is the only one in the frame.
   if (!BeginSubmission(true)) {
+    XELOGE("IssueSwap: BeginSubmission failed");
     return;
   }
 
@@ -1458,8 +1466,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   VkImageView swap_texture_view = texture_cache_->RequestSwapTexture(
       frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_format);
   if (swap_texture_view == VK_NULL_HANDLE) {
+    XELOGE(
+        "IssueSwap: fetch constant 0 does not name a usable swap texture, so "
+        "there is no front buffer to present");
     return;
   }
+  XELOGE("IssueSwap: swap texture {}x{} format {}", frontbuffer_width_scaled,
+         frontbuffer_height_scaled, uint32_t(frontbuffer_format));
 
   auto aspect = graphics_system_->GetScaledAspectRatio();
 
