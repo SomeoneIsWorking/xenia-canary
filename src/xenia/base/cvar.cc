@@ -69,7 +69,7 @@ void ParseLaunchArguments(int& argc, char**& argv,
     auto result = options.parse(argc, argv);
     if (result.count("help")) {
       xe::AttachConsole();
-      if (xe::has_console_attached()) {
+      if (xe::has_console_attached() || xe::is_console_app()) {
         PrintHelpAndExit();
       } else {
         xe::ShowSimpleMessageBox(xe::SimpleMessageBoxType::Help,
@@ -93,7 +93,11 @@ void ParseLaunchArguments(int& argc, char**& argv,
     }
   } catch (const cxxopts::exceptions::exception& e) {
     xe::AttachConsole();
-    if (xe::has_console_attached()) {
+    // is_console_app() as well as has_console_attached(): the latter is
+    // isatty(stdin) on POSIX, so a console tool invoked from a script -- with
+    // stdin redirected, which is how they are always invoked -- would take the
+    // message-box path and hang behind a dialog that outlives it.
+    if (xe::has_console_attached() || xe::is_console_app()) {
       std::cout << e.what() << std::endl;
       PrintHelpAndExit();
     } else {

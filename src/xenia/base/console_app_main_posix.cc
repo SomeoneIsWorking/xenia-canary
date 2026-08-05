@@ -7,11 +7,17 @@
  ******************************************************************************
  */
 
+#include "xenia/base/console.h"
 #include "xenia/base/console_app_main.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 
 int main(int argc, char** argv) {
+  // Declared before anything can fail: an argument error must reach stderr,
+  // not a GUI dialog. has_console_attached() is isatty(stdin) here, which is
+  // false for every scripted invocation of a console tool.
+  xe::set_console_app(true);
+
   xe::ConsoleAppEntryInfo entry_info = xe::GetConsoleAppEntryInfo();
 
   if (!entry_info.transparent_options) {
