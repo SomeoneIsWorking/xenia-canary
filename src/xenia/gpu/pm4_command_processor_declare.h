@@ -9,7 +9,12 @@ virtual uint32_t ExecutePrimaryBuffer(uint32_t start_index, uint32_t end_index)
 virtual bool ExecutePacket() PM4_OVERRIDE;
 
 public:
-void ExecutePacket(uint32_t ptr, uint32_t count);
+// VIRTUAL, and it must be. TracePlayer calls this through a CommandProcessor*,
+// so a non-virtual one runs the BASE class's instantiation of this template --
+// whose draws go to CommandProcessor::IssueDraw, a stub that returns false.
+// Every trace-played draw therefore failed with "Failed in backend" and no
+// backend ever saw it, whatever the trace contained.
+virtual void ExecutePacket(uint32_t ptr, uint32_t count) PM4_OVERRIDE;
 
 protected:
 XE_NOINLINE

@@ -2453,11 +2453,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // CompletedSubmissionUpdated.
   for (uint32_t i = 0; i < 2; ++i) {
     if (!BeginSubmission(true)) {
+      XELOGE("IssueDraw: BeginSubmission failed");
       return false;
     }
 
     // Process primitives.
     if (!primitive_processor_->Process(primitive_processing_result)) {
+      XELOGE("IssueDraw: primitive processor rejected the draw");
       return false;
     }
     if (!primitive_processing_result.host_draw_vertex_count) {
@@ -2475,6 +2477,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
             Shader::HostVertexShaderType::kPointListAsTriangleStrip &&
         !Shader::IsHostVertexShaderTypeDomain(
             primitive_processing_result.host_vertex_shader_type)) {
+      XELOGE("IssueDraw: unsupported host vertex shader type {}",
+             uint32_t(primitive_processing_result.host_vertex_shader_type));
       return false;
     }
 
@@ -2499,6 +2503,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                      : nullptr;
     if (!pipeline_cache_->EnsureShadersTranslated(vertex_shader_translation,
                                                   pixel_shader_translation)) {
+      XELOGE("IssueDraw: shader translation failed");
       return false;
     }
 
@@ -2550,6 +2555,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
             // anymore (would enter an infinite loop otherwise if the number of
             // attempts was not limited to 2). Possibly too many unique samplers
             // in one draw, or failed to await submission completion.
+            XELOGE("IssueDraw: sampler overflow could not be recovered from");
             return false;
           }
           ++samplers_overflowed_count;
@@ -2583,6 +2589,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   if (!render_target_cache_->Update(is_rasterization_done,
                                     normalized_depth_control,
                                     normalized_color_mask, *vertex_shader)) {
+    XELOGE("IssueDraw: render target cache update failed");
     return false;
   }
 
@@ -2595,6 +2602,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
           primitive_processing_result, normalized_depth_control,
           normalized_color_mask,
           render_target_cache_->last_update_render_pass_key(), &pipeline)) {
+    XELOGE("IssueDraw: pipeline configuration failed");
     return false;
   }
 
@@ -2606,6 +2614,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     current_pipeline = pipeline->pipeline.load(std::memory_order_acquire);
     if (current_pipeline == VK_NULL_HANDLE) {
       // Still not ready - something is wrong.
+      XELOGE("IssueDraw: pipeline never became ready");
       return false;
     }
   }
@@ -2732,6 +2741,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Update uniform buffers and descriptor sets after binding the pipeline with
   // the new layout.
   if (!UpdateBindings(vertex_shader, pixel_shader)) {
+    XELOGE("IssueDraw: UpdateBindings failed");
     return false;
   }
 
@@ -2887,6 +2897,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         break;
       default:
         assert_unhandled_case(primitive_processing_result.index_buffer_type);
+        XELOGE("IssueDraw: unhandled index buffer type {}",
+               uint32_t(primitive_processing_result.index_buffer_type));
         return false;
     }
     deferred_command_buffer_.CmdVkBindIndexBuffer(
