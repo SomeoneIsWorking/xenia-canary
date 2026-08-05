@@ -1085,6 +1085,11 @@ bool VulkanRenderTargetCache::Resolve(
         draw_resolution_scale_x(), draw_resolution_scale_y(),
         copy_shader_constants, copy_group_count_x, copy_group_count_y);
     assert_true(copy_group_count_x && copy_group_count_y);
+    if (copy_shader == draw_util::ResolveCopyShaderIndex::kUnknown) {
+      XELOGE(
+          "Resolve: no copy shader for this destination, so nothing is written "
+          "-- and IssueCopy still reports the byte count it would have written");
+    }
     if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
       const draw_util::ResolveCopyShaderInfo& copy_shader_info =
           draw_util::resolve_copy_shader_info[size_t(copy_shader)];
@@ -6042,8 +6047,19 @@ void VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base,
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
                                  dump_pitch, dump_rectangles_);
   if (dump_rectangles_.empty()) {
+    // Said out loud: the copy that follows reads the EDRAM buffer, so a dump
+    // that finds no render target owning this range does not skip the resolve
+    // -- it makes the resolve write ZEROS over the destination. From the
+    // destination memory that is indistinguishable from a resolve of a black
+    // target, which is exactly the ambiguity being chased in the trace dump.
+    XELOGE(
+        "DumpRenderTargets: NO render target owns EDRAM base {} ({} tiles per "
+        "row, {} rows, pitch {}), so the resolve about to run will copy zeros",
+        dump_base, dump_row_length_used, dump_rows, dump_pitch);
     return;
   }
+  XELOGE("DumpRenderTargets: EDRAM base {} -> {} rectangle(s)", dump_base,
+         dump_rectangles_.size());
 
   // Clear previously set temporary indices.
   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {

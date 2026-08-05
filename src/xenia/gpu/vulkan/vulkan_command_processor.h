@@ -286,6 +286,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
                               uint32_t length);
   // (address, byte length) of every resolve this frame, for the probe above.
   std::vector<std::pair<uint32_t, uint32_t>> gears_resolve_ranges_;
+  // Per-frame draw outcomes, reported at the swap. IssueDraw has two paths that
+  // drop a draw and return SUCCESS, so a frame that renders nothing can log
+  // nothing; these make that visible without a line per draw.
+  uint32_t gears_draws_recorded_ = 0;
+  uint32_t gears_draws_no_rasterization_ = 0;
+  uint32_t gears_draws_no_vertices_ = 0;
 
   Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                      const uint32_t* host_address,
