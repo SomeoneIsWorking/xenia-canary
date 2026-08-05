@@ -292,6 +292,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint32_t gears_draws_recorded_ = 0;
   uint32_t gears_draws_no_rasterization_ = 0;
   uint32_t gears_draws_no_vertices_ = 0;
+  // How many swaps have gone past, so the probe can sample rather than measure
+  // every frame, and can name which swap a line came from.
+  uint32_t gears_probe_swap_index_ = 0;
 
   Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                      const uint32_t* host_address,

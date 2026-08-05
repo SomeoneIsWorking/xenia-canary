@@ -39,12 +39,14 @@
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(readback_resolve_half_pixel_offset);
 
-// Costs a full-frame GPU readback and a queue wait per swap, so it is off by
-// default rather than something a normal run pays for.
-DEFINE_bool(gears_probe_front_buffer, false,
-            "At every swap, read the front buffer's range out of the "
-            "shared-memory buffer and log how much of it is non-zero.",
-            "GPU");
+// Costs a 512 MiB GPU readback and a queue wait, so it is a SAMPLE, not a
+// per-frame measurement: N is how many swaps to skip between probes. A live run
+// at 30 fps cannot pay this every frame, and a trace dump has one swap and so
+// wants 1.
+DEFINE_int32(gears_probe_front_buffer, 0,
+             "Read the front buffer's range out of the shared-memory buffer "
+             "and log how much of it is non-zero, every N swaps. 0 disables.",
+             "GPU");
 
 namespace xe {
 namespace gpu {
@@ -1881,7 +1883,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 void VulkanCommandProcessor::ProbeSharedMemoryRange(const char* when,
                                                    uint32_t address,
                                                    uint32_t length) {
-  if (!cvars::gears_probe_front_buffer) {
+  if (cvars::gears_probe_front_buffer <= 0) {
+    return;
+  }
+  // Sampled, and it says which sample it is: a single line with no swap number
+  // reads as "this is the frame", which is exactly wrong for a live run.
+  if ((gears_probe_swap_index_++ % uint32_t(cvars::gears_probe_front_buffer)) !=
+      0) {
     return;
   }
   const VkDeviceSize range_bytes = VkDeviceSize(length);
@@ -2029,9 +2037,9 @@ void VulkanCommandProcessor::ProbeSharedMemoryRange(const char* when,
     return;
   }
   XELOGE(
-      "shared-memory probe [{}]: {:08X} ({} bytes, tiled): {} non-zero "
-      "({:.1f}%), mean {:.2f}",
-      when, frontbuffer_ptr, uint64_t(range_bytes), nonzero,
+      "shared-memory probe [{} swap #{}]: {:08X} ({} bytes, tiled): {} "
+      "non-zero ({:.1f}%), mean {:.2f}",
+      when, gears_probe_swap_index_ - 1, frontbuffer_ptr, uint64_t(range_bytes), nonzero,
       100.0 * double(nonzero) / double(range_bytes),
       double(sum) / double(range_bytes));
   XELOGE(
