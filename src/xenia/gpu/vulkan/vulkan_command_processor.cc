@@ -3012,7 +3012,15 @@ bool VulkanCommandProcessor::IssueCopy() {
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
+  // Named for the same reason IssueDraw's and IssueSwap's early-outs are: a
+  // resolve that writes nothing and one that never ran are indistinguishable
+  // from the destination memory, and that memory is what the next frame -- or a
+  // trace dump's swap -- presents.
+  XELOGE("IssueCopy: entry, dest {:08X}",
+         register_file_->values[XE_GPU_REG_RB_COPY_DEST_BASE]);
+
   if (!BeginSubmission(true)) {
+    XELOGE("IssueCopy: BeginSubmission failed");
     return false;
   }
 
@@ -3021,8 +3029,11 @@ bool VulkanCommandProcessor::IssueCopy() {
   if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
                                      written_address, written_length,
                                      &copy_dest_info)) {
+    XELOGE("IssueCopy: render target cache refused the resolve");
     return false;
   }
+  XELOGE("IssueCopy: resolved {} bytes at {:08X}", written_length,
+         written_address);
 
   // CPU readback resolve path (if not disabled).
   ReadbackResolveMode readback_mode = GetReadbackResolveMode();

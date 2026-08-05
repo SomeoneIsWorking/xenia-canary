@@ -1452,7 +1452,14 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   // Making changes to the UI (setting the icon) and executing game config
   // load callbacks which expect to be called from the UI thread.
   // If not on UI thread, dispatch to it synchronously.
-  if (!display_window_->app_context().IsInUIThread()) {
+  // A WINDOWLESS emulator -- the console GPU tools, and a headless harness
+  // driving a title -- has no UI thread to dispatch to and no icon to set.
+  // Dereferencing display_window_ here faulted before the launch printed its
+  // first line, and the guest exception handler turned that fault into a spin,
+  // so it presented as the disc mount hanging. Same shape as the null
+  // imgui_drawer_ in Setup(): a pointer the signature allows to be null, used
+  // without a check.
+  if (display_window_ && !display_window_->app_context().IsInUIThread()) {
     X_STATUS result = X_STATUS_UNSUCCESSFUL;
     display_window_->app_context().CallInUIThreadSynchronous(
         [this, &path, &module_path, &result]() {
@@ -1484,7 +1491,9 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   title_id_ = std::nullopt;
   title_name_ = "";
   title_version_ = "";
-  display_window_->SetIcon(nullptr, 0);
+  if (display_window_) {
+    display_window_->SetIcon(nullptr, 0);
+  }
 
   // Allow xam to request module loads.
   auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");
@@ -1691,7 +1700,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
              table.str());
 
       auto icon_block = game_info_database_->GetIcon();
-      if (!icon_block.empty()) {
+      if (display_window_ && !icon_block.empty()) {
         display_window_->SetIcon(icon_block.data(), icon_block.size());
       }
     }
