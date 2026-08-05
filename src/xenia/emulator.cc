@@ -297,7 +297,14 @@ X_STATUS Emulator::Setup(
   }
 
   // Add inputSystem to UI
-  imgui_drawer_->LoadInputSystem(input_system_.get());
+  // The console tools (xenia-gpu-vulkan-trace-dump) have no UI and pass a null
+  // ImGui drawer, as Setup's own signature allows -- display_window and every
+  // factory beside them are null-checked. This one was not, so those tools
+  // faulted here before reaching the trace file, and the fault handler turned
+  // the crash into a spin rather than an error message.
+  if (imgui_drawer_) {
+    imgui_drawer_->LoadInputSystem(input_system_.get());
+  }
 
   XELOGI("{}: Initializing VFS...", __func__);
   // Bring up the virtual filesystem used by the kernel.
