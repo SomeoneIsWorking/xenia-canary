@@ -1279,8 +1279,14 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     return false;
   }
 
-  // Within range. Pause the emulator and eat the exception.
-  Pause();
+  // Within range: this is a guest crash.
+  //
+  // The dump is written BEFORE pausing, and that order matters. Pause() waits
+  // on a fence the GPU thread must signal, and in a build with no UI nothing
+  // ever resumes -- so the process stops here with an EMPTY log, and a guest
+  // crash is indistinguishable from a hang or from a game that simply stopped
+  // drawing. Logging first means the operator always learns the PC, the fault
+  // address and the register file, whatever the pause does afterwards.
 
   // Dump information into the log.
   auto current_thread = kernel::XThread::GetCurrentThread();
@@ -1332,6 +1338,19 @@ bool Emulator::ExceptionCallback(Exception* ex) {
                     context->v[i].u32[2], context->v[i].u32[3]));
   }
   XELOGE("{}", crash_msg);
+
+  // Now stop the world. Deliberately after the dump, and skipped entirely when
+  // there is no UI to resume from: a windowless run would otherwise wait here
+  // forever instead of exiting with the crash it just reported.
+  if (display_window_) {
+    Pause();
+  } else {
+    XELOGE(
+        "The guest crashed and there is no UI to pause into, so the emulator "
+        "is left running with the faulting thread stopped. Nothing further "
+        "will be drawn.");
+  }
+
   std::string crash_dlg = fmt::format(
       "The guest has crashed.\n\n"
       "Xenia has now paused itself.\n\n"
