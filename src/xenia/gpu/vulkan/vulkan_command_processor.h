@@ -278,6 +278,15 @@ class VulkanCommandProcessor final : public CommandProcessor {
   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                  uint32_t frontbuffer_height) override;
 
+  // Diagnostic: reads a guest address range out of the shared-memory buffer and
+  // reports how much of it is non-zero, tagged with `when` so the same range
+  // can be compared at the resolve that writes it and at the swap that reads
+  // it. Off unless --gears_probe_front_buffer is passed.
+  void ProbeSharedMemoryRange(const char* when, uint32_t address,
+                              uint32_t length);
+  // (address, byte length) of every resolve this frame, for the probe above.
+  std::vector<std::pair<uint32_t, uint32_t>> gears_resolve_ranges_;
+
   Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                      const uint32_t* host_address,
                      uint32_t dword_count) override;
