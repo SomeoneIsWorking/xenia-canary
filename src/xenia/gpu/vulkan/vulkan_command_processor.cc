@@ -1476,7 +1476,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
   auto aspect = graphics_system_->GetScaledAspectRatio();
 
-  presenter->RefreshGuestOutput(
+  const bool refreshed = presenter->RefreshGuestOutput(
       frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
       aspect.second,
       [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
@@ -1484,6 +1484,8 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           ui::Presenter::GuestOutputRefreshContext& context) -> bool {
         // In case the swap command is the only one in the frame.
         if (!BeginSubmission(true)) {
+          XELOGE("IssueSwap: the guest-output refresh could not begin a "
+                 "submission, so nothing was drawn into it");
           return false;
         }
 
@@ -1786,8 +1788,16 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         // presenter so it can submit its own commands for displaying it to the
         // queue, and also need to submit the release barrier.
         EndSubmission(true);
+        XELOGE("IssueSwap: the guest-output image was refreshed");
         return true;
       });
+  if (!refreshed) {
+    // The distinction that matters: a swap whose refresher never ran leaves the
+    // presenter holding a BLANK image, which a capture then writes out as a
+    // perfectly plausible black frame.
+    XELOGE("IssueSwap: RefreshGuestOutput returned false -- the guest output "
+           "was NOT updated, so anything captured is stale or blank");
+  }
 
   // End the frame even if did not present for any reason (the image refresher
   // was not called), to prevent leaking per-frame resources.

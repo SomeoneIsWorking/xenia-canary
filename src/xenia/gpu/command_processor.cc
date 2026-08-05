@@ -229,6 +229,17 @@ void CommandProcessor::InitializeShaderStorage(
 
 void CommandProcessor::RequestFrameTrace(
     const std::filesystem::path& root_path) {
+#if XE_ENABLE_TRACE_WRITER_INSTRUMENTATION != 1
+  // Said out loud. Every call below succeeds and sets state, but the code that
+  // would WRITE the trace is compiled out under NDEBUG -- so the request is
+  // accepted, no file ever appears, and the trace writer never says a word.
+  // That is indistinguishable from a request that silently failed.
+  XELOGE(
+      "RequestFrameTrace: this build has XE_ENABLE_TRACE_WRITER_INSTRUMENTATION "
+      "disabled (it defaults off under NDEBUG), so NO TRACE WILL BE WRITTEN. "
+      "Rebuild with -DXE_ENABLE_TRACE_WRITER_INSTRUMENTATION=1.");
+  return;
+#endif
   if (trace_state_ == TraceState::kStreaming) {
     XELOGE("Streaming trace; cannot also trace frame.");
     return;
@@ -242,6 +253,13 @@ void CommandProcessor::RequestFrameTrace(
 }
 
 void CommandProcessor::BeginTracing(const std::filesystem::path& root_path) {
+#if XE_ENABLE_TRACE_WRITER_INSTRUMENTATION != 1
+  XELOGE(
+      "BeginTracing: this build has XE_ENABLE_TRACE_WRITER_INSTRUMENTATION "
+      "disabled, so NO TRACE WILL BE WRITTEN. Rebuild with "
+      "-DXE_ENABLE_TRACE_WRITER_INSTRUMENTATION=1.");
+  return;
+#endif
   if (trace_state_ == TraceState::kStreaming) {
     XELOGE("Streaming already active; ignoring request.");
     return;
