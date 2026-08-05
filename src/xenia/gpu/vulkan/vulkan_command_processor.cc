@@ -1848,6 +1848,15 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // was not called), to prevent leaking per-frame resources.
   EndSubmission(true);
 
+  XELOGE(
+      "IssueSwap: this frame's draws: {} recorded, {} dropped with no "
+      "rasterization and no memory export, {} dropped with zero host vertices",
+      gears_draws_recorded_, gears_draws_no_rasterization_,
+      gears_draws_no_vertices_);
+  gears_draws_recorded_ = 0;
+  gears_draws_no_rasterization_ = 0;
+  gears_draws_no_vertices_ = 0;
+
   ProbeSharedMemoryRange("swap", frontbuffer_ptr,
                          frontbuffer_width_scaled * frontbuffer_height_scaled *
                              4);
@@ -2683,7 +2692,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     // Disabling pixel shader for this case is also required by the pipeline
     // cache.
     if (memexport_ranges_.empty()) {
-      // This draw has no effect.
+      // This draw has no effect. Counted rather than returned silently: a frame
+      // where every draw takes this path renders nothing and logs nothing, so
+      // from the outside it is indistinguishable from a frame that drew.
+      ++gears_draws_no_rasterization_;
       return true;
     }
   }
@@ -2724,7 +2736,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       return false;
     }
     if (!primitive_processing_result.host_draw_vertex_count) {
-      // Nothing to draw.
+      // Nothing to draw -- counted for the same reason as above.
+      ++gears_draws_no_vertices_;
       return true;
     }
     // TODO(Triang3l): Geometry-type-specific vertex shader, vertex shader as
@@ -3135,6 +3148,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       render_target_cache_->last_update_framebuffer());
 
   // Draw.
+  ++gears_draws_recorded_;
   if (primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
       shader_32bit_index_dma) {
