@@ -39,6 +39,13 @@
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(readback_resolve_half_pixel_offset);
 
+// Costs a full-frame GPU readback and a queue wait per swap, so it is off by
+// default rather than something a normal run pays for.
+DEFINE_bool(gears_probe_front_buffer, false,
+            "At every swap, read the front buffer's range out of the "
+            "shared-memory buffer and log how much of it is non-zero.",
+            "GPU");
+
 namespace xe {
 namespace gpu {
 namespace vulkan {
@@ -1474,6 +1481,44 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   XELOGE("IssueSwap: swap texture {}x{} format {}", frontbuffer_width_scaled,
          frontbuffer_height_scaled, uint32_t(frontbuffer_format));
 
+  // IS THERE A GAMMA RAMP TO PRESENT THROUGH? The swap shader puts every
+  // channel through this LUT, so an all-zero table turns any picture into a
+  // uniformly black one with opaque alpha -- which is exactly what a trace dump
+  // of a known-good frame produces. The ramp is ACCUMULATED from DC_LUT_*
+  // register writes, so it is state a capture has to carry, and the writes that
+  // built it may have happened long before the captured frame.
+  //
+  // It reports whichever of the two ramps this swap will actually use, and it
+  // reports it whether or not it found anything: the entry count, how many
+  // differ from zero, and the first entries as raw values. A ramp that is
+  // present and a ramp that was never uploaded must not look the same from
+  // outside.
+  {
+    uint32_t nonzero = 0;
+    if (frontbuffer_format == xenos::TextureFormat::k_2_10_10_10 ||
+        frontbuffer_format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16) {
+      const reg::DC_LUT_PWL_DATA* pwl = gamma_ramp_pwl_rgb();
+      for (size_t i = 0; i < 128 * 3; ++i) {
+        if (pwl[i].value) ++nonzero;
+      }
+      XELOGE(
+          "IssueSwap: PWL gamma ramp: {} of {} entries non-zero; first {:08X} "
+          "{:08X} {:08X}. An all-zero ramp presents any frame as black",
+          nonzero, 128 * 3, pwl[0].value, pwl[1].value, pwl[2].value);
+    } else {
+      const reg::DC_LUT_30_COLOR* table = gamma_ramp_256_entry_table();
+      for (size_t i = 0; i < 256; ++i) {
+        if (table[i].value) ++nonzero;
+      }
+      XELOGE(
+          "IssueSwap: 256-entry gamma ramp: {} of 256 entries non-zero; first "
+          "{:08X} {:08X} {:08X}, last {:08X}. An all-zero ramp presents any "
+          "frame as black",
+          nonzero, table[0].value, table[1].value, table[2].value,
+          table[255].value);
+    }
+  }
+
   auto aspect = graphics_system_->GetScaledAspectRatio();
 
   const bool refreshed = presenter->RefreshGuestOutput(
@@ -1802,6 +1847,199 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // End the frame even if did not present for any reason (the image refresher
   // was not called), to prevent leaking per-frame resources.
   EndSubmission(true);
+
+  ProbeSharedMemoryRange("swap", frontbuffer_ptr,
+                         frontbuffer_width_scaled * frontbuffer_height_scaled *
+                             4);
+  gears_resolve_ranges_.clear();
+}
+
+// WHAT THE SWAP TEXTURE IS LOADED FROM, read back off the GPU.
+//
+// A black presented frame has several indistinguishable causes, and the guest's
+// own memory cannot separate them: a resolve writes into the shared-memory
+// BUFFER on the GPU, not into the CPU-side guest pages, so reading those pages
+// says nothing about whether the frame was resolved. (Probing them was tried
+// first and reported 1.2% non-zero for a frame that had definitely rendered --
+// a measurement of the wrong thing, which read exactly like a real negative.)
+//
+// This copies the front buffer's range out of the shared-memory buffer and
+// counts it. It reports the address, the byte count and the non-zero count
+// whether or not it finds anything, and it reports the reason instead of
+// staying silent when the readback itself cannot be set up -- "no data there"
+// and "never looked" must not print the same way. The bytes are TILED, so this
+// claims only presence, never a picture.
+void VulkanCommandProcessor::ProbeSharedMemoryRange(const char* when,
+                                                   uint32_t address,
+                                                   uint32_t length) {
+  if (!cvars::gears_probe_front_buffer) {
+    return;
+  }
+  const VkDeviceSize range_bytes = VkDeviceSize(length);
+  const uint32_t frontbuffer_ptr = address;
+  // The WHOLE shared-memory buffer, not just the front buffer's range. A range
+  // that reads zero has two meanings -- nothing was written there, or this
+  // probe cannot see the buffer at all -- and only the rest of the buffer can
+  // separate them. So the negative carries its own control: it says how much of
+  // the entire 512 MiB is non-zero and which blocks it is in.
+  const VkDeviceSize probe_bytes = SharedMemory::kBufferSize;
+  if (!range_bytes || !shared_memory_) {
+    XELOGE(
+        "shared-memory probe [{}]: nothing to read ({} bytes, shared memory "
+        "{}), so this run says NOTHING about what is at {:08X}",
+        when, length, shared_memory_ ? "present" : "absent", address);
+    return;
+  }
+  const VkDeviceSize offset = VkDeviceSize(frontbuffer_ptr & 0x1FFFFFFFu);
+
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+
+  VkBuffer buffer;
+  VkDeviceMemory buffer_memory;
+  if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
+          vulkan_device, probe_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+          ui::vulkan::util::MemoryPurpose::kReadback, buffer, buffer_memory)) {
+    XELOGE(
+        "shared-memory probe [{}]: could not create the readback buffer, so "
+        "{:08X} was NOT examined",
+        when, frontbuffer_ptr);
+    return;
+  }
+
+  VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+  pool_info.queueFamilyIndex = vulkan_device->queue_family_graphics_compute();
+  VkCommandPool pool;
+  if (dfn.vkCreateCommandPool(device, &pool_info, nullptr, &pool) !=
+      VK_SUCCESS) {
+    XELOGE(
+        "shared-memory probe [{}]: could not create the command pool, so "
+        "{:08X} was NOT examined",
+        when, frontbuffer_ptr);
+    dfn.vkDestroyBuffer(device, buffer, nullptr);
+    dfn.vkFreeMemory(device, buffer_memory, nullptr);
+    return;
+  }
+
+  bool probed = false;
+  uint64_t nonzero = 0, sum = 0, total_nonzero = 0;
+  std::string blocks, ranges;
+  {
+    VkCommandBufferAllocateInfo cb_info = {
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cb_info.commandPool = pool;
+    cb_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cb_info.commandBufferCount = 1;
+    VkCommandBuffer cb;
+    if (dfn.vkAllocateCommandBuffers(device, &cb_info, &cb) == VK_SUCCESS) {
+      VkCommandBufferBeginInfo begin_info = {
+          VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+      if (dfn.vkBeginCommandBuffer(cb, &begin_info) == VK_SUCCESS) {
+        VkBufferCopy copy;
+        copy.srcOffset = 0;
+        copy.dstOffset = 0;
+        copy.size = probe_bytes;
+        dfn.vkCmdCopyBuffer(cb, shared_memory_->buffer(), buffer, 1, &copy);
+        VkBufferMemoryBarrier host_barrier = {
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host_barrier.buffer = buffer;
+        host_barrier.offset = 0;
+        host_barrier.size = VK_WHOLE_SIZE;
+        dfn.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
+                                 &host_barrier, 0, nullptr);
+        if (dfn.vkEndCommandBuffer(cb) == VK_SUCCESS) {
+          VkResult submit_result;
+          {
+            ui::vulkan::VulkanGPUCompletionTimeline completion_timeline(
+                const_cast<ui::vulkan::VulkanDevice*>(vulkan_device));
+            VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &cb;
+            submit_result = completion_timeline.AcquireFenceAndSubmit(
+                vulkan_device->queue_family_graphics_compute(), 0, 1,
+                &submit_info);
+            // Destroying the timeline awaits the submission.
+          }
+          if (submit_result == VK_SUCCESS) {
+            void* mapping;
+            if (dfn.vkMapMemory(device, buffer_memory, 0, VK_WHOLE_SIZE, 0,
+                                &mapping) == VK_SUCCESS) {
+              const uint8_t* bytes = static_cast<const uint8_t*>(mapping);
+              for (VkDeviceSize i = 0; i < range_bytes; ++i) {
+                if (bytes[offset + i]) ++nonzero;
+                sum += bytes[offset + i];
+              }
+              // Every range this frame resolved, measured at the same
+              // moment, so "the front buffer is empty" can be read against
+              // "and so is / is not every other resolve destination".
+              for (const auto& r : gears_resolve_ranges_) {
+                uint64_t rn = 0;
+                const VkDeviceSize ro = VkDeviceSize(r.first & 0x1FFFFFFFu);
+                for (VkDeviceSize i = 0; i < r.second; ++i) {
+                  if (ro + i < probe_bytes && bytes[ro + i]) ++rn;
+                }
+                ranges += fmt::format(" {:08X}+{}:{}", r.first, r.second, rn);
+              }
+              constexpr VkDeviceSize kBlock = 16u << 20;
+              for (VkDeviceSize b = 0; b < probe_bytes; b += kBlock) {
+                uint64_t block_nonzero = 0;
+                for (VkDeviceSize i = 0; i < kBlock; ++i) {
+                  if (bytes[b + i]) ++block_nonzero;
+                }
+                total_nonzero += block_nonzero;
+                if (block_nonzero) {
+                  blocks += fmt::format(" {:08X}:{}", uint32_t(b),
+                                        block_nonzero);
+                }
+              }
+              dfn.vkUnmapMemory(device, buffer_memory);
+              probed = true;
+            }
+          }
+        }
+      }
+    }
+  }
+  dfn.vkDestroyCommandPool(device, pool, nullptr);
+  dfn.vkDestroyBuffer(device, buffer, nullptr);
+  dfn.vkFreeMemory(device, buffer_memory, nullptr);
+
+  if (!probed) {
+    XELOGE(
+        "shared-memory probe [{}]: the readback did not complete, so {:08X} "
+        "was NOT examined",
+        when, frontbuffer_ptr);
+    return;
+  }
+  XELOGE(
+      "shared-memory probe [{}]: {:08X} ({} bytes, tiled): {} non-zero "
+      "({:.1f}%), mean {:.2f}",
+      when, frontbuffer_ptr, uint64_t(range_bytes), nonzero,
+      100.0 * double(nonzero) / double(range_bytes),
+      double(sum) / double(range_bytes));
+  XELOGE(
+      "shared-memory probe [{}]: this frame's resolve destinations "
+      "(address+bytes:non-zero):{}",
+      when,
+      ranges.empty() ? std::string(" NONE -- no resolve was recorded this"
+                                   " frame, so there is nothing to compare"
+                                   " the front buffer against")
+                     : ranges);
+  XELOGE(
+      "shared-memory probe [{}]: the whole buffer ({} MiB): {} bytes "
+      "non-zero, in 16 MiB blocks:{}",
+      when, uint64_t(probe_bytes >> 20), total_nonzero,
+      blocks.empty() ? std::string(" NONE -- the probe sees nothing anywhere,"
+                                   " so it says nothing about the front buffer")
+                     : blocks);
 }
 
 bool VulkanCommandProcessor::PushBufferMemoryBarrier(
@@ -3044,6 +3282,7 @@ bool VulkanCommandProcessor::IssueCopy() {
   }
   XELOGE("IssueCopy: resolved {} bytes at {:08X}", written_length,
          written_address);
+  gears_resolve_ranges_.emplace_back(written_address, written_length);
 
   // CPU readback resolve path (if not disabled).
   ReadbackResolveMode readback_mode = GetReadbackResolveMode();
