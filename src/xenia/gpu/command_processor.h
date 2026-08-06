@@ -128,6 +128,16 @@ class CommandProcessor {
   uint32_t counter() const { return counter_; }
   void increment_counter() { counter_++; }
 
+  // GUEST FRAMES PRESENTED, and nothing else. `counter_` above cannot serve
+  // this: GraphicsSystem also bumps it once per VBLANK so the title sees
+  // progress, so it advances when the guest presents nothing. This one is
+  // incremented only in the VdSwap handler, which is the guest's own frame
+  // boundary -- the same event our runtime counts -- so the two emulators can
+  // be driven and sampled by the SAME index instead of by wall clock.
+  uint64_t guest_swap_count() const {
+    return guest_swap_count_.load(std::memory_order_relaxed);
+  }
+
   Shader* active_vertex_shader() const { return active_vertex_shader_; }
   Shader* active_pixel_shader() const { return active_pixel_shader_; }
 
@@ -528,6 +538,9 @@ class CommandProcessor {
   std::vector<uint32_t> me_bin_;
 
   uint32_t counter_ = 0;
+  // Read from other threads (the harness samples it while the GPU
+  // worker advances it), so it is atomic rather than plain.
+  std::atomic<uint64_t> guest_swap_count_{0};
 
   uint32_t primary_buffer_ptr_ = 0;
   uint32_t primary_buffer_size_ = 0;
