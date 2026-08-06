@@ -289,12 +289,26 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Per-frame draw outcomes, reported at the swap. IssueDraw has two paths that
   // drop a draw and return SUCCESS, so a frame that renders nothing can log
   // nothing; these make that visible without a line per draw.
+  // GEARS: which pixel shader's float constants to write out once, from
+  // GEARS_ORACLE_PS_CONSTS (a hex ucode hash). Zero disables it entirely,
+  // so a normal run pays one integer compare per draw and nothing else.
+  uint64_t gears_const_dump_hash_ = 0;
+  uint64_t gears_dump_at_frame_ = 0;
+  uint32_t gears_vs_binds_this_frame_ = 0;
+  uint64_t gears_vconst_dump_hash_ = 0;
+  bool gears_vconst_dumped_ = false;
+  bool gears_const_dumped_ = false;
   uint32_t gears_draws_recorded_ = 0;
   uint32_t gears_draws_no_rasterization_ = 0;
   uint32_t gears_draws_no_vertices_ = 0;
   // How many swaps have gone past, so the probe can sample rather than measure
   // every frame, and can name which swap a line came from.
   uint32_t gears_probe_swap_index_ = 0;
+  // GEARS_PROBE_AFTER_RESOLVE=1: probe each resolve's destination the moment
+  // the resolve's own submission completes, not only at the swap. "the copy
+  // wrote nothing" and "the copy wrote and something overwrote it" are
+  // indistinguishable from the swap alone, and catalog #79 turns on which.
+  bool gears_probe_after_resolve_ = false;
 
   Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                      const uint32_t* host_address,
