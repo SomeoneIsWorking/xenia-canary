@@ -667,6 +667,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
                                frontbuffer_height);
 
   ++counter_;
+  // The guest's own frame boundary. See CommandProcessor::guest_swap_count().
+  guest_swap_count_.fetch_add(1, std::memory_order_relaxed);
   return true;
 }
 
