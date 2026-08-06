@@ -390,6 +390,10 @@ void GraphicsSystem::RequestFrameTrace() {
   command_processor_->RequestFrameTrace(cvars::trace_gpu_prefix);
 }
 
+bool GraphicsSystem::IsFrameTracePending() const {
+  return command_processor_ && command_processor_->is_frame_trace_pending();
+}
+
 void GraphicsSystem::BeginTracing() {
   command_processor_->BeginTracing(cvars::trace_gpu_prefix);
 }

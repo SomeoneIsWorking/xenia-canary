@@ -79,6 +79,10 @@ class GraphicsSystem {
   void RequestFrameTrace();
   void BeginTracing();
   void EndTracing();
+  // See CommandProcessor::is_frame_trace_pending -- a requested frame trace is
+  // written from the GPU worker thread, and shutting down inside that window
+  // truncates it and aborts.
+  bool IsFrameTracePending() const;
 
   bool is_paused() const { return paused_; }
   void Pause();

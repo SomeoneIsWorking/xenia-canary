@@ -110,29 +110,6 @@ struct MappedFileRange {
 std::vector<MappedFileRange> mapped_file_ranges;
 std::mutex g_mapped_file_ranges_mutex;
 
-// Track shm file names for cleanup on exit
-std::vector<std::string> g_shm_file_names;
-std::mutex g_shm_file_names_mutex;
-static bool g_cleanup_handlers_installed = false;
-
-#if !XE_PLATFORM_ANDROID
-static void CleanupAtExit() {
-  for (const auto& name : g_shm_file_names) {
-    shm_unlink(name.c_str());
-  }
-}
-
-static void InstallCleanupHandlers() {
-  if (g_cleanup_handlers_installed) {
-    return;
-  }
-  g_cleanup_handlers_installed = true;
-
-  std::atexit(CleanupAtExit);
-  std::at_quick_exit(CleanupAtExit);
-}
-#endif  // !XE_PLATFORM_ANDROID
-
 void* AllocFixed(void* base_address, size_t length,
                  AllocationType allocation_type, PageAccess access) {
   // mmap does not support reserve / commit, so ignore allocation_type.
@@ -303,32 +280,31 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
   }
-  // Track for cleanup on abnormal exit and install cleanup handlers
-  {
-    std::lock_guard guard(g_shm_file_names_mutex);
-    g_shm_file_names.push_back(full_path.string());
-  }
-  InstallCleanupHandlers();
+  // UNLINK THE NAME NOW, while still holding the fd.
+  //
+  // The mapping is kept alive by the descriptor, not by the name, so removing
+  // the name here costs nothing and makes the object impossible to leak: the
+  // kernel reclaims it when the last descriptor closes, however the process
+  // ends. Nothing reopens these by name -- every caller maps through the handle
+  // returned here.
+  //
+  // This replaces an atexit/at_quick_exit cleanup, which cannot run for the
+  // case that actually leaks. A crash left behind one 4.6 GB guest-memory
+  // object and one 256 MB code cache PER RUN, and 43 of each accumulated in
+  // /dev/shm across two days of oracle runs until they hit the user's 6.3 GB
+  // tmpfs quota. After that every new run took SIGBUS while writing its code
+  // cache during "Initializing Processor" -- a crash caused entirely by the
+  // debris of earlier crashes, which is as confusing as it sounds.
+  shm_unlink(full_path.c_str());
   return ret;
 #endif
 }
 
 void CloseFileMappingHandle(FileMappingHandle handle,
                             const std::filesystem::path& path) {
+  // The name was already unlinked at creation, so closing the descriptor is
+  // the whole of the cleanup: the object goes away with the last mapping.
   close(handle);
-#if !XE_PLATFORM_ANDROID
-  auto full_path = "/" / path;
-  shm_unlink(full_path.c_str());
-  // Remove from tracking
-  {
-    std::lock_guard guard(g_shm_file_names_mutex);
-    auto it = std::find(g_shm_file_names.begin(), g_shm_file_names.end(),
-                        full_path.string());
-    if (it != g_shm_file_names.end()) {
-      g_shm_file_names.erase(it);
-    }
-  }
-#endif
 }
 
 void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
