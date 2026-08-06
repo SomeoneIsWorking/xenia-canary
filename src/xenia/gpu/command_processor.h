@@ -162,6 +162,21 @@ class CommandProcessor {
   virtual void BeginTracing(const std::filesystem::path& root_path);
   virtual void EndTracing();
 
+  // Whether a single-frame trace requested through RequestFrameTrace has not
+  // finished writing yet.
+  //
+  // Without this, RequestFrameTrace is fire-and-forget with no completion
+  // signal at all, and a caller that shuts the emulator down after requesting
+  // one is racing the GPU worker thread: the trace opens on one swap and closes
+  // on the NEXT, and everything in between is written from that thread. Tearing
+  // the command processor down in that window closes the FILE* under a thread
+  // inside fwrite, which aborts in glibc's stdio with "free(): invalid pointer"
+  // and leaves a truncated .xtr -- a trace file that exists, is short, and says
+  // nothing about why.
+  bool is_frame_trace_pending() const {
+    return frame_trace_pending_.load(std::memory_order_acquire);
+  }
+
   virtual void TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) = 0;
 
   void RestoreRegisters(uint32_t first_register,
@@ -498,6 +513,9 @@ class CommandProcessor {
     kSingleFrame,
   };
   TraceState trace_state_ = TraceState::kDisabled;
+  // Read by other threads (is_frame_trace_pending), so it is atomic while
+  // trace_state_ above stays worker-thread-only.
+  std::atomic<bool> frame_trace_pending_{false};
   std::filesystem::path trace_stream_path_;
   std::filesystem::path trace_frame_path_;
 

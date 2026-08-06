@@ -250,6 +250,7 @@ void CommandProcessor::RequestFrameTrace(
   }
   trace_state_ = TraceState::kSingleFrame;
   trace_frame_path_ = root_path;
+  frame_trace_pending_.store(true, std::memory_order_release);
 }
 
 void CommandProcessor::BeginTracing(const std::filesystem::path& root_path) {

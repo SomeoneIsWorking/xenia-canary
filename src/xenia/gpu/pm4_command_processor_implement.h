@@ -576,6 +576,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
         if (trace_state_ == TraceState::kSingleFrame) {
           trace_state_ = TraceState::kDisabled;
           trace_writer_.Close();
+          // Released only once the file is CLOSED, so a caller waiting on this
+          // cannot tear the command processor down mid-write.
+          frame_trace_pending_.store(false, std::memory_order_release);
         }
       } else if (trace_state_ == TraceState::kSingleFrame) {
         // New trace request - we only start tracing at the beginning of a
