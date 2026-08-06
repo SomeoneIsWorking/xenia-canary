@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <cstdlib>
+#include <set>
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 
 #include <cstdint>
@@ -161,6 +163,28 @@ std::string VulkanCommandProcessor::GetWindowTitleText() const {
 }
 
 bool VulkanCommandProcessor::SetupContext() {
+  // GEARS: read the one-shot constant-dump target once, at setup, so the draw
+  // path only ever compares an integer. See the dump site in UpdateBindings.
+  if (const char* gears_fenv = std::getenv("GEARS_ORACLE_DUMP_AT_FRAME")) {
+    gears_dump_at_frame_ = std::strtoull(gears_fenv, nullptr, 10);
+    XELOGI("gears: constant dumps wait for guest frame {}", gears_dump_at_frame_);
+  }
+  if (const char* gears_venv = std::getenv("GEARS_ORACLE_VS_CONSTS")) {
+    gears_vconst_dump_hash_ = std::strtoull(gears_venv, nullptr, 16);
+    XELOGI("gears: will dump vertex shader {:016X} float constants once",
+           gears_vconst_dump_hash_);
+  }
+  if (const char* gears_renv = std::getenv("GEARS_PROBE_AFTER_RESOLVE")) {
+    gears_probe_after_resolve_ = std::strtoul(gears_renv, nullptr, 10) != 0;
+    XELOGI("gears: probe after each resolve: {}",
+           gears_probe_after_resolve_ ? "on" : "off");
+  }
+  if (const char* gears_env = std::getenv("GEARS_ORACLE_PS_CONSTS")) {
+    gears_const_dump_hash_ = std::strtoull(gears_env, nullptr, 16);
+    XELOGI("gears: will dump pixel shader {:016X} float constants once",
+           gears_const_dump_hash_);
+  }
+
   if (!CommandProcessor::SetupContext()) {
     XELOGE("Failed to initialize base command processor context");
     return false;
@@ -1850,6 +1874,11 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // was not called), to prevent leaking per-frame resources.
   EndSubmission(true);
 
+  if (gears_vs_binds_this_frame_) {
+    XELOGI("gears: target VS bound by {} draws in frame {}",
+           gears_vs_binds_this_frame_, guest_swap_count());
+  }
+  gears_vs_binds_this_frame_ = 0;
   XELOGE(
       "IssueSwap: this frame's draws: {} recorded, {} dropped with no "
       "rasterization and no memory export, {} dropped with zero host vertices",
@@ -3305,6 +3334,20 @@ bool VulkanCommandProcessor::IssueCopy() {
   XELOGE("IssueCopy: resolved {} bytes at {:08X}", written_length,
          written_address);
   gears_resolve_ranges_.emplace_back(written_address, written_length);
+
+  // Probe the destination NOW, before anything else can touch it. At the swap
+  // alone, "the copy shader wrote nothing" and "the copy wrote and a later
+  // shared-memory upload overwrote it" produce the identical reading of zero,
+  // and catalog #79 has spent several sessions unable to tell them apart.
+  //
+  // The flush is what makes this a real measurement: the copy is recorded into
+  // the DEFERRED command buffer and is not submitted yet, while the probe
+  // submits its own. Without the flush every resolve would read empty and the
+  // negative would be an artefact of the instrument, not of the emulator.
+  if (gears_probe_after_resolve_) {
+    EndSubmission(true);
+    ProbeSharedMemoryRange("after-resolve", written_address, written_length);
+  }
 
   // CPU readback resolve path (if not disabled).
   ReadbackResolveMode readback_mode = GetReadbackResolveMode();
@@ -5781,6 +5824,62 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
           mapping += sizeof(float) * 4;
         }
       }
+      // GEARS: the same one-shot dump for the VERTEX constants, selected by
+      // GEARS_ORACLE_VS_CONSTS. This is the last input on catalog #77 that has
+      // never been compared against Xenia -- the skinned character's vertex
+      // shader is what produces the interpolator both measured zeros follow
+      // from. vertex_shader is never null (a draw always has one), but the
+      // null test is kept because the pixel-side version of this cost a run
+      // by omitting it.
+      // Gated on a GUEST FRAME so both sides can sample the same pose. Without
+      // this the dump fires on the first draw that binds the shader, which is a
+      // different pose on each side -- and the pose is exactly what has to
+      // match for the bone palette and camera matrices to be comparable.
+      // GEARS: how many DRAWS per frame bind the target vertex shader. Our own
+      // gameplay frame binds the skinned character's VS six times, of which
+      // exactly one writes colour, and catalog #77's standing conclusion is
+      // that the character therefore has no lit diffuse pass. That conclusion
+      // has never been checked against the reference: if the oracle binds it
+      // MORE often, the missing draws are the answer.
+      if (gears_vconst_dump_hash_ && vertex_shader) {
+        uint64_t gh = 0xCBF29CE484222325ull;
+        for (uint32_t gd : vertex_shader->ucode_data()) {
+          const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
+                                 uint8_t(gd >> 8), uint8_t(gd)};
+          for (int gi = 0; gi < 4; ++gi) { gh ^= gb[gi]; gh *= 0x100000001B3ull; }
+        }
+        if (gh == gears_vconst_dump_hash_) ++gears_vs_binds_this_frame_;
+      }
+      if (gears_vconst_dump_hash_ && vertex_shader && !gears_vconst_dumped_ &&
+          guest_swap_count() >= gears_dump_at_frame_) {
+        uint64_t gears_h = 0xCBF29CE484222325ull;
+        for (uint32_t gd : vertex_shader->ucode_data()) {
+          const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
+                                 uint8_t(gd >> 8), uint8_t(gd)};
+          for (int gi = 0; gi < 4; ++gi) {
+            gears_h ^= gb[gi];
+            gears_h *= 0x100000001B3ull;
+          }
+        }
+        if (gears_h == gears_vconst_dump_hash_) {
+          gears_vconst_dumped_ = true;
+          const uint8_t* src =
+              mapping - sizeof(float) * 4 * float_constant_count_vertex;
+          if (FILE* f = std::fopen("scratch/oracle/vs_consts.txt", "wb")) {
+            std::fprintf(f, "vs %016llX %u vec4s at guest frame %llu\n",
+                         (unsigned long long)gears_vconst_dump_hash_,
+                         float_constant_count_vertex,
+                         (unsigned long long)guest_swap_count());
+            for (uint32_t ci = 0; ci < float_constant_count_vertex; ++ci) {
+              float v[4];
+              std::memcpy(v, src + size_t(ci) * 16, 16);
+              std::fprintf(f, "c[%u]=(%g, %g, %g, %g)\n", ci, v[0], v[1], v[2],
+                           v[3]);
+            }
+            std::fclose(f);
+          }
+        }
+      }
       current_constant_buffers_up_to_date_ |=
           UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatVertex;
     }
@@ -5810,6 +5909,74 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
                             (float_constant_index << 2)],
                       sizeof(float) * 4);
           mapping += sizeof(float) * 4;
+        }
+      }
+      // GEARS: write ONE named pixel shader's packed float constants to a
+      // file, once per run. This settles the last unverified input on catalog
+      // #77: our renderer uses Xenia's translator and every plumbing check
+      // passes, yet a character shader Xenia lights renders black for us -- so
+      // the constants, which come from each side's own CPU emulation, are the
+      // one input left that can differ.
+      //
+      // DELIBERATELY MINIMAL ON THE DRAW PATH. An earlier version logged every
+      // distinct shader's constants through XELOGI here and stopped the title
+      // presenting at all (a 256-constant shader formats a ~15 KB line, once
+      // per shader, on the hot path). This costs one integer compare per draw
+      // and, exactly once, one fwrite.
+      // pixel_shader is NULL on depth-only draws, and dereferencing it here
+      // is what broke the two earlier attempts at this dump -- the emulator
+      // died before presenting and it read as "the logging is too slow".
+      if (gears_const_dump_hash_ && pixel_shader && !gears_const_dumped_ &&
+          guest_swap_count() >= gears_dump_at_frame_) {
+        // IDENTIFY THE SHADER THE WAY OUR RUNTIME DOES, not the way Xenia
+        // does. Xenia's ucode_data_hash() and our runtime's hash are different
+        // functions over the same bytes, so keying on Xenia's hash matched
+        // nothing at all and the dump silently never fired -- which looks
+        // exactly like "the shader is never bound". Our runtime hashes the
+        // BIG-ENDIAN byte sequence it loaded, with FNV-1a 64, so reproduce
+        // that here from the dwords Xenia holds.
+        uint64_t gears_h = 0xCBF29CE484222325ull;
+        for (uint32_t gd : pixel_shader->ucode_data()) {
+          const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
+                                 uint8_t(gd >> 8), uint8_t(gd)};
+          for (int gi = 0; gi < 4; ++gi) {
+            gears_h ^= gb[gi];
+            gears_h *= 0x100000001B3ull;
+          }
+        }
+        // GEARS_ORACLE_PS_CONSTS=ffffffffffffffff means "census": append every
+        // distinct shader hash instead of dumping one. Without this, "the file
+        // is empty" cannot be told apart from "my hash reproduction is wrong",
+        // and both look like the shader was never bound.
+        if (gears_const_dump_hash_ == 0xFFFFFFFFFFFFFFFFull) {
+          static std::set<uint64_t> gears_seen;
+          if (gears_seen.insert(gears_h).second) {
+            if (FILE* fc = std::fopen("scratch/oracle/ps_hashes.txt", "ab")) {
+              std::fprintf(fc, "%016llx %u dwords %u consts\n",
+                           (unsigned long long)gears_h,
+                           (unsigned)pixel_shader->ucode_dword_count(),
+                           float_constant_count_pixel);
+              std::fclose(fc);
+            }
+          }
+        }
+        if (gears_h == gears_const_dump_hash_) {
+          gears_const_dumped_ = true;
+          const uint8_t* src =
+              mapping - sizeof(float) * 4 * float_constant_count_pixel;
+          if (FILE* f = std::fopen("scratch/oracle/ps_consts.txt", "wb")) {
+            std::fprintf(f, "ps %016llX %u vec4s at guest frame %llu\n",
+                         (unsigned long long)gears_const_dump_hash_,
+                         float_constant_count_pixel,
+                         (unsigned long long)guest_swap_count());
+            for (uint32_t ci = 0; ci < float_constant_count_pixel; ++ci) {
+              float v[4];
+              std::memcpy(v, src + size_t(ci) * 16, 16);
+              std::fprintf(f, "c[%u]=(%g, %g, %g, %g)\n", ci, v[0], v[1], v[2],
+                           v[3]);
+            }
+            std::fclose(f);
+          }
         }
       }
       current_constant_buffers_up_to_date_ |=
