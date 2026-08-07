@@ -321,6 +321,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // that many draws, the same rule our runtime applies) or pinned by index.
   uint64_t gears_resolve_dump_frame_ = 0;
   uint32_t gears_resolve_dump_min_draws_ = 0;
+  // How many frames PAST the first gameplay frame to dump. The first one is a
+  // fade from black on both emulators, so comparing it compares two black
+  // frames; the runtime's GEARS_DRAW_FRAME_AFTER_GAMEPLAY is the same offset.
+  uint32_t gears_resolve_dump_after_ = 0;
   uint32_t gears_resolve_dump_busiest_ = 0;
   // GEARS_ORACLE_DRAW_STREAM=<path>: one line per frame naming the (vs, ps)
   // pairs the guest bound and how often. The cross-emulator comparison that

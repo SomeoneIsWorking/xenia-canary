@@ -210,6 +210,11 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("oracle: resolve dump waits for the first frame with >= {} draws",
            gears_resolve_dump_min_draws_);
   }
+  if (const char* gears_agenv = std::getenv("GEARS_ORACLE_DUMP_AFTER_GAMEPLAY")) {
+    gears_resolve_dump_after_ = std::strtoul(gears_agenv, nullptr, 10);
+    XELOGI("oracle: resolve dump waits {} further frames after the first"
+           " gameplay frame", gears_resolve_dump_after_);
+  }
   if (const char* gears_rfenv = std::getenv("GEARS_ORACLE_RESOLVE_DUMP_AT_FRAME")) {
     gears_resolve_dump_frame_ = std::strtoull(gears_rfenv, nullptr, 10);
     XELOGI("oracle: resolve dump pinned to guest frame {}",
@@ -1954,7 +1959,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     gears_resolve_dump_busiest_ =
         std::max(gears_resolve_dump_busiest_, gears_draws_recorded_);
     if (gears_draws_recorded_ >= gears_resolve_dump_min_draws_) {
-      gears_resolve_dump_frame_ = guest_swap_count() + 1;
+      // Plus GEARS_ORACLE_DUMP_AFTER_GAMEPLAY frames. The FIRST gameplay frame
+      // is not a useful one to compare: the level starts on a fade from black,
+      // and this console run's own last two copies of it -- the post-chain
+      // output and the front buffer -- are entirely zero. A frame compared
+      // there says only that both sides were black.
+      gears_resolve_dump_frame_ =
+          guest_swap_count() + 1 + gears_resolve_dump_after_;
       XELOGE("oracle: frame {} recorded {} draws (>= {}), so it is gameplay;"
              " dumping every resolve of frame {}",
              guest_swap_count(), gears_draws_recorded_,
@@ -3526,10 +3537,17 @@ bool VulkanCommandProcessor::IssueCopy() {
                          : copy_regs[kColorInfoRegs[copy_src_select & 3]]) &
         0xFFF;
     ProbeSharedMemoryRange(
-        fmt::format("f{}_copy{}_src{}{:03X}_{}x{}", guest_swap_count(),
+        // The DESTINATION FORMAT is part of the name because the comparison
+        // has to decode these bytes. Without it the reader can only assume, and
+        // this frame alone carries four-byte and eight-byte destinations under
+        // otherwise identical keys -- decoding a 16-bit-float buffer as
+        // k_8_8_8_8 produces a plausible image of the wrong pass, which is the
+        // most misleading artefact the comparison could emit.
+        fmt::format("f{}_copy{}_src{}{:03X}_{}x{}_f{}", guest_swap_count(),
                     copy_index, copy_from_depth ? 'D' : 'C', copy_src_base,
                     copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] & 0x3FFF,
-                    (copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] >> 16) & 0x3FFF)
+                    (copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] >> 16) & 0x3FFF,
+                    uint32_t(copy_dest_info.copy_dest_format))
             .c_str(),
         written_address, written_length);
     if (dump_this_frame) {
