@@ -174,6 +174,15 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("gears: will dump vertex shader {:016X} float constants once",
            gears_vconst_dump_hash_);
   }
+  if (const char* gears_senv = std::getenv("GEARS_ORACLE_DRAW_STREAM")) {
+    gears_draw_stream_ = std::fopen(gears_senv, "wb");
+    // A path that cannot be opened must not read as a frame with no draws.
+    if (!gears_draw_stream_)
+      XELOGE("gears: could NOT open the draw stream at '{}'; this run records"
+             " nothing and must not be compared", gears_senv);
+    else
+      XELOGI("gears: writing the per-frame draw stream to {}", gears_senv);
+  }
   if (const char* gears_renv = std::getenv("GEARS_PROBE_AFTER_RESOLVE")) {
     gears_probe_after_resolve_ = std::strtoul(gears_renv, nullptr, 10) != 0;
     XELOGI("gears: probe after each resolve: {}",
@@ -1884,6 +1893,16 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       "rasterization and no memory export, {} dropped with zero host vertices",
       gears_draws_recorded_, gears_draws_no_rasterization_,
       gears_draws_no_vertices_);
+  if (gears_draw_stream_) {
+    std::string line = fmt::format("{}\t{}", gears_draw_stream_frame_++,
+                                   gears_draws_recorded_);
+    for (const auto& [pair, n] : gears_draw_stream_counts_)
+      line += fmt::format("\t{:016x}:{:016x}:{}", pair.first, pair.second, n);
+    line += '\n';
+    std::fwrite(line.data(), 1, line.size(), gears_draw_stream_);
+    std::fflush(gears_draw_stream_);
+    gears_draw_stream_counts_.clear();
+  }
   gears_draws_recorded_ = 0;
   gears_draws_no_rasterization_ = 0;
   gears_draws_no_vertices_ = 0;
@@ -3186,6 +3205,29 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 
   // Draw.
   ++gears_draws_recorded_;
+  // GEARS_ORACLE_DRAW_STREAM: accumulate WHAT THE GUEST ASKED THE GPU TO DO this
+  // frame -- the multiset of (vertex shader, pixel shader) pairs it bound. The
+  // draw stream is the guest's own output, so it is where a difference between
+  // our CPU emulation and this one shows up; and comparing it needs no
+  // frame-exact alignment, which gears1 catalog #84 establishes is unavailable.
+  //
+  // HASHED THE WAY OUR RUNTIME HASHES, not the way Xenia does: FNV-1a 64 over the
+  // BIG-ENDIAN ucode bytes. Xenia's own ucode_data_hash() is a different function
+  // over the same bytes, and keying on it would make every shader look unique to
+  // the other side -- a total mismatch that reads like a real divergence.
+  if (gears_draw_stream_) {
+    auto gears_hash = [](const Shader* shader) -> uint64_t {
+      if (!shader) return 0;
+      uint64_t h = 0xCBF29CE484222325ull;
+      for (uint32_t d : shader->ucode_data()) {
+        const uint8_t b[4] = {uint8_t(d >> 24), uint8_t(d >> 16), uint8_t(d >> 8),
+                              uint8_t(d)};
+        for (int i = 0; i < 4; ++i) { h ^= b[i]; h *= 0x100000001B3ull; }
+      }
+      return h;
+    };
+    ++gears_draw_stream_counts_[{gears_hash(vertex_shader), gears_hash(pixel_shader)}];
+  }
   if (primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
       shader_32bit_index_dma) {
