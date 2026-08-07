@@ -310,6 +310,11 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // wrote nothing" and "the copy wrote and something overwrote it" are
   // indistinguishable from the swap alone, and catalog #79 turns on which.
   bool gears_probe_after_resolve_ = false;
+  // GEARS_ORACLE_RESOLVE_DUMP=<dir>: write each resolve's DESTINATION BYTES,
+  // read back off the GPU, so our pass output and the console's can be diffed
+  // layer by layer instead of only at the presented frame. Empty = off.
+  std::string gears_resolve_dump_dir_;
+  uint32_t gears_resolve_dump_copy_ = 0;
   // GEARS_ORACLE_DRAW_STREAM=<path>: one line per frame naming the (vs, ps)
   // pairs the guest bound and how often. The cross-emulator comparison that
   // needs no frame-exact alignment; see the accumulate site in IssueDraw.
