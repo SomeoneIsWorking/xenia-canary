@@ -183,6 +183,15 @@ bool VulkanCommandProcessor::SetupContext() {
     else
       XELOGI("gears: writing the per-frame draw stream to {}", gears_senv);
   }
+  if (const char* gears_rdenv = std::getenv("GEARS_ORACLE_RESOLVE_DUMP")) {
+    gears_resolve_dump_dir_ = gears_rdenv;
+    if (!gears_resolve_dump_dir_.empty()) {
+      std::filesystem::create_directories(
+          std::filesystem::path(gears_resolve_dump_dir_));
+      XELOGE("oracle: resolve destinations will be dumped to {}",
+             gears_resolve_dump_dir_);
+    }
+  }
   if (const char* gears_renv = std::getenv("GEARS_PROBE_AFTER_RESOLVE")) {
     gears_probe_after_resolve_ = std::strtoul(gears_renv, nullptr, 10) != 0;
     XELOGI("gears: probe after each resolve: {}",
@@ -1931,14 +1940,25 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 void VulkanCommandProcessor::ProbeSharedMemoryRange(const char* when,
                                                    uint32_t address,
                                                    uint32_t length) {
-  if (cvars::gears_probe_front_buffer <= 0) {
-    return;
-  }
-  // Sampled, and it says which sample it is: a single line with no swap number
-  // reads as "this is the frame", which is exactly wrong for a live run.
-  if ((gears_probe_swap_index_++ % uint32_t(cvars::gears_probe_front_buffer)) !=
-      0) {
-    return;
+  // A DUMP RUN IS NOT A SAMPLED RUN. The front-buffer probe is sampled (and off
+  // by default), but a layer-by-layer comparison needs EVERY resolve of the
+  // frame it is dumping, so the dump path bypasses both gates. Sampling it
+  // would silently drop passes and leave a filmstrip with holes that reads as
+  // "the console did not render that pass".
+  const bool dumping = !gears_resolve_dump_dir_.empty() &&
+                       gears_dump_at_frame_ != 0 &&
+                       guest_swap_count() == gears_dump_at_frame_;
+  if (!dumping) {
+    if (cvars::gears_probe_front_buffer <= 0) {
+      return;
+    }
+    // Sampled, and it says which sample it is: a single line with no swap
+    // number reads as "this is the frame", which is exactly wrong for a live
+    // run.
+    if ((gears_probe_swap_index_++ %
+         uint32_t(cvars::gears_probe_front_buffer)) != 0) {
+      return;
+    }
   }
   const VkDeviceSize range_bytes = VkDeviceSize(length);
   const uint32_t frontbuffer_ptr = address;
@@ -2038,6 +2058,28 @@ void VulkanCommandProcessor::ProbeSharedMemoryRange(const char* when,
             if (dfn.vkMapMemory(device, buffer_memory, 0, VK_WHOLE_SIZE, 0,
                                 &mapping) == VK_SUCCESS) {
               const uint8_t* bytes = static_cast<const uint8_t*>(mapping);
+              if (dumping) {
+                // RAW GUEST BYTES, exactly as they sit in the destination --
+                // tiled, in the guest's own format. Deliberately not decoded
+                // here: our side dumps the same bytes from the same address, so
+                // the comparison is between two identical representations and
+                // any difference is real rather than a difference between two
+                // decoders. Decoding for the eye happens offline, once, in one
+                // place.
+                const std::string path = fmt::format(
+                    "{}/oracle_{}_{:08X}_{}.bin", gears_resolve_dump_dir_, when,
+                    frontbuffer_ptr, uint64_t(range_bytes));
+                if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                  std::fwrite(bytes + offset, 1, size_t(range_bytes), f);
+                  std::fclose(f);
+                } else {
+                  // A dump that cannot open its file must not leave a run
+                  // looking like a console that resolved nothing.
+                  XELOGE("oracle: COULD NOT WRITE {} -- this resolve was NOT"
+                         " dumped and its absence is this error, not an empty"
+                         " destination", path);
+                }
+              }
               for (VkDeviceSize i = 0; i < range_bytes; ++i) {
                 if (bytes[offset + i]) ++nonzero;
                 sum += bytes[offset + i];
@@ -3386,9 +3428,37 @@ bool VulkanCommandProcessor::IssueCopy() {
   // the DEFERRED command buffer and is not submitted yet, while the probe
   // submits its own. Without the flush every resolve would read empty and the
   // negative would be an artefact of the instrument, not of the emulator.
-  if (gears_probe_after_resolve_) {
+  // ONLY THE FRAME UNDER TEST. Each dump flushes the deferred command buffer
+  // and reads the whole 512 MiB shared-memory buffer back, so dumping every
+  // resolve of every frame costs about a second per frame -- a run so slow it
+  // never reaches gameplay, which reads as a title that will not load rather
+  // than as an instrument that is too expensive. --gears_dump_at_frame selects
+  // the guest frame; without it the dump is off rather than everywhere.
+  const bool dump_this_frame =
+      !gears_resolve_dump_dir_.empty() && gears_dump_at_frame_ != 0 &&
+      guest_swap_count() == gears_dump_at_frame_;
+  if (gears_probe_after_resolve_ || dump_this_frame) {
     EndSubmission(true);
-    ProbeSharedMemoryRange("after-resolve", written_address, written_length);
+    // Tagged with the guest frame and this frame's copy ordinal, and the
+    // destination's own layout, so a dump can be paired with ours by the thing
+    // both sides agree on -- the destination address -- and decoded without
+    // guessing. Ordinals alone are not enough: the two renderers do not execute
+    // the same number of copies (catalog: we execute 14 of 18 on bright.gfr).
+    const uint32_t copy_index = gears_resolve_dump_copy_++;
+    ProbeSharedMemoryRange(
+        fmt::format("f{}_copy{}", guest_swap_count(), copy_index).c_str(),
+        written_address, written_length);
+    if (dump_this_frame) {
+      const RegisterFile& regs = *register_file_;
+      XELOGE("oracle resolve dump: frame {} copy {} dest {:08X} {} bytes"
+             " pitch {} height {} format {} endian {} tiled {}",
+             guest_swap_count(), copy_index, written_address, written_length,
+             regs[XE_GPU_REG_RB_COPY_DEST_PITCH] & 0x3FFF,
+             (regs[XE_GPU_REG_RB_COPY_DEST_PITCH] >> 16) & 0x3FFF,
+             uint32_t(copy_dest_info.copy_dest_format),
+             uint32_t(copy_dest_info.copy_dest_endian),
+             uint32_t(copy_dest_info.copy_dest_array));
+    }
   }
 
   // CPU readback resolve path (if not disabled).
