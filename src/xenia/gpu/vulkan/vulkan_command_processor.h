@@ -315,6 +315,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // layer by layer instead of only at the presented frame. Empty = off.
   std::string gears_resolve_dump_dir_;
   uint32_t gears_resolve_dump_copy_ = 0;
+  // WHICH guest frame the dump covers. Zero means "not selected yet", which is
+  // also "dump nothing" -- an unselected dump would run at ~0.8 fps forever.
+  // Set by GEARS_ORACLE_DUMP_MIN_DRAWS (content: the frame after the first with
+  // that many draws, the same rule our runtime applies) or pinned by index.
+  uint64_t gears_resolve_dump_frame_ = 0;
+  uint32_t gears_resolve_dump_min_draws_ = 0;
+  uint32_t gears_resolve_dump_busiest_ = 0;
   // GEARS_ORACLE_DRAW_STREAM=<path>: one line per frame naming the (vs, ps)
   // pairs the guest bound and how often. The cross-emulator comparison that
   // needs no frame-exact alignment; see the accumulate site in IssueDraw.

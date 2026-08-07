@@ -192,6 +192,40 @@ bool VulkanCommandProcessor::SetupContext() {
              gears_resolve_dump_dir_);
     }
   }
+  // WHICH frame's resolves to dump. A frame INDEX is not a landmark: the level
+  // load takes a variable number of presents, so the index at which one run
+  // reaches gameplay is a loading screen in the next (catalog #89 -- both sides
+  // captured a loading frame at 2920 because that was gameplay in the run the
+  // number came from). So the default selector is by CONTENT: dump the frame
+  // AFTER the first frame that records at least N draws, which is the same rule
+  // our runtime applies to itself, so both sides land on the same game moment
+  // rather than on the same integer.
+  //
+  // The frame AFTER, not the frame itself, because the draw count is only known
+  // once the frame has ended -- and it is the identical rule on both sides, so
+  // the two captures stay paired.
+  gears_resolve_dump_frame_ = gears_dump_at_frame_;
+  if (const char* gears_mdenv = std::getenv("GEARS_ORACLE_DUMP_MIN_DRAWS")) {
+    gears_resolve_dump_min_draws_ = std::strtoul(gears_mdenv, nullptr, 10);
+    XELOGI("oracle: resolve dump waits for the first frame with >= {} draws",
+           gears_resolve_dump_min_draws_);
+  }
+  if (const char* gears_rfenv = std::getenv("GEARS_ORACLE_RESOLVE_DUMP_AT_FRAME")) {
+    gears_resolve_dump_frame_ = std::strtoull(gears_rfenv, nullptr, 10);
+    XELOGI("oracle: resolve dump pinned to guest frame {}",
+           gears_resolve_dump_frame_);
+  }
+  if (!gears_resolve_dump_dir_.empty() && !gears_resolve_dump_frame_ &&
+      !gears_resolve_dump_min_draws_) {
+    // A dump directory with no selector would dump EVERY resolve of every
+    // frame, and each dump flushes the deferred command buffer and reads 512
+    // MiB back: about 0.8 fps, a run that never reaches gameplay. Refuse it
+    // rather than let it look like a title that will not load.
+    XELOGE("oracle: GEARS_ORACLE_RESOLVE_DUMP is set but no frame selector is"
+           " -- set GEARS_ORACLE_DUMP_MIN_DRAWS=<n> (content) or"
+           " GEARS_ORACLE_RESOLVE_DUMP_AT_FRAME=<n> (index). NOTHING WILL BE"
+           " DUMPED.");
+  }
   if (const char* gears_renv = std::getenv("GEARS_PROBE_AFTER_RESOLVE")) {
     gears_probe_after_resolve_ = std::strtoul(gears_renv, nullptr, 10) != 0;
     XELOGI("gears: probe after each resolve: {}",
@@ -1912,6 +1946,29 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     std::fflush(gears_draw_stream_);
     gears_draw_stream_counts_.clear();
   }
+  // CONTENT SELECTION for the resolve dump: the first frame that records at
+  // least N draws is the first gameplay frame, whatever index the load happens
+  // to end on. Arms the NEXT frame, because the count is only known now that
+  // this one has ended.
+  if (gears_resolve_dump_min_draws_ && !gears_resolve_dump_frame_) {
+    gears_resolve_dump_busiest_ =
+        std::max(gears_resolve_dump_busiest_, gears_draws_recorded_);
+    if (gears_draws_recorded_ >= gears_resolve_dump_min_draws_) {
+      gears_resolve_dump_frame_ = guest_swap_count() + 1;
+      XELOGE("oracle: frame {} recorded {} draws (>= {}), so it is gameplay;"
+             " dumping every resolve of frame {}",
+             guest_swap_count(), gears_draws_recorded_,
+             gears_resolve_dump_min_draws_, gears_resolve_dump_frame_);
+    } else if ((guest_swap_count() % 600) == 0) {
+      // The periodic NEGATIVE, with its denominator. A run that never reaches
+      // the threshold must be distinguishable from one whose selector never
+      // ran -- silence would read as "the console rendered no gameplay".
+      XELOGE("oracle: {} frames presented, none with >= {} draws yet (busiest"
+             " so far: {} draws). NOTHING has been dumped.",
+             guest_swap_count() + 1, gears_resolve_dump_min_draws_,
+             gears_resolve_dump_busiest_);
+    }
+  }
   gears_draws_recorded_ = 0;
   gears_draws_no_rasterization_ = 0;
   gears_draws_no_vertices_ = 0;
@@ -1946,8 +2003,8 @@ void VulkanCommandProcessor::ProbeSharedMemoryRange(const char* when,
   // would silently drop passes and leave a filmstrip with holes that reads as
   // "the console did not render that pass".
   const bool dumping = !gears_resolve_dump_dir_.empty() &&
-                       gears_dump_at_frame_ != 0 &&
-                       guest_swap_count() == gears_dump_at_frame_;
+                       gears_resolve_dump_frame_ != 0 &&
+                       guest_swap_count() == gears_resolve_dump_frame_;
   if (!dumping) {
     if (cvars::gears_probe_front_buffer <= 0) {
       return;
@@ -3432,21 +3489,48 @@ bool VulkanCommandProcessor::IssueCopy() {
   // and reads the whole 512 MiB shared-memory buffer back, so dumping every
   // resolve of every frame costs about a second per frame -- a run so slow it
   // never reaches gameplay, which reads as a title that will not load rather
-  // than as an instrument that is too expensive. --gears_dump_at_frame selects
-  // the guest frame; without it the dump is off rather than everywhere.
+  // than as an instrument that is too expensive. The frame is selected in
+  // SetupContext -- by content (GEARS_ORACLE_DUMP_MIN_DRAWS) or pinned by index
+  // -- and without a selector the dump is off rather than everywhere.
   const bool dump_this_frame =
-      !gears_resolve_dump_dir_.empty() && gears_dump_at_frame_ != 0 &&
-      guest_swap_count() == gears_dump_at_frame_;
+      !gears_resolve_dump_dir_.empty() && gears_resolve_dump_frame_ != 0 &&
+      guest_swap_count() == gears_resolve_dump_frame_;
   if (gears_probe_after_resolve_ || dump_this_frame) {
     EndSubmission(true);
-    // Tagged with the guest frame and this frame's copy ordinal, and the
-    // destination's own layout, so a dump can be paired with ours by the thing
-    // both sides agree on -- the destination address -- and decoded without
-    // guessing. Ordinals alone are not enough: the two renderers do not execute
-    // the same number of copies (catalog: we execute 14 of 18 on bright.gfr).
+    // Tagged with the guest frame, this frame's copy ordinal, and the pass's
+    // STRUCTURAL IDENTITY: which EDRAM surface it copies out of and the
+    // destination's dimensions.
+    //
+    // Not the destination ADDRESS, which was the first thing tried and does not
+    // work: the title's own physical allocations land in different places in the
+    // two emulators (a paired gameplay capture had every one of our seven
+    // destinations around 0x0Cxxxxxx and every one of the console's eight around
+    // 0x13xxxxxx), so an address-joined comparison pairs nothing at all. The
+    // EDRAM base and the copy dimensions come from the guest's own registers and
+    // are therefore the same on both sides. Ordinals alone are not enough
+    // either: the two renderers do not execute the same number of copies.
     const uint32_t copy_index = gears_resolve_dump_copy_++;
+    const RegisterFile& copy_regs = *register_file_;
+    const uint32_t copy_src_select =
+        copy_regs[XE_GPU_REG_RB_COPY_CONTROL] & 0x7;
+    const bool copy_from_depth = copy_src_select >= 4;
+    // copy_src_select INDEXES the colour surfaces (RB_COLOR_INFO, then
+    // RB_COLOR1/2/3_INFO); 4 and up mean depth. Reading RB_COLOR_INFO
+    // unconditionally would name surface 0 for every copy and silently merge
+    // four different passes into one key.
+    static const uint32_t kColorInfoRegs[4] = {
+        XE_GPU_REG_RB_COLOR_INFO, XE_GPU_REG_RB_COLOR1_INFO,
+        XE_GPU_REG_RB_COLOR2_INFO, XE_GPU_REG_RB_COLOR3_INFO};
+    const uint32_t copy_src_base =
+        (copy_from_depth ? copy_regs[XE_GPU_REG_RB_DEPTH_INFO]
+                         : copy_regs[kColorInfoRegs[copy_src_select & 3]]) &
+        0xFFF;
     ProbeSharedMemoryRange(
-        fmt::format("f{}_copy{}", guest_swap_count(), copy_index).c_str(),
+        fmt::format("f{}_copy{}_src{}{:03X}_{}x{}", guest_swap_count(),
+                    copy_index, copy_from_depth ? 'D' : 'C', copy_src_base,
+                    copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] & 0x3FFF,
+                    (copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] >> 16) & 0x3FFF)
+            .c_str(),
         written_address, written_length);
     if (dump_this_frame) {
       const RegisterFile& regs = *register_file_;
