@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -309,6 +310,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // wrote nothing" and "the copy wrote and something overwrote it" are
   // indistinguishable from the swap alone, and catalog #79 turns on which.
   bool gears_probe_after_resolve_ = false;
+  // GEARS_ORACLE_DRAW_STREAM=<path>: one line per frame naming the (vs, ps)
+  // pairs the guest bound and how often. The cross-emulator comparison that
+  // needs no frame-exact alignment; see the accumulate site in IssueDraw.
+  std::FILE* gears_draw_stream_ = nullptr;
+  uint64_t gears_draw_stream_frame_ = 0;
+  std::map<std::pair<uint64_t, uint64_t>, uint32_t> gears_draw_stream_counts_;
 
   Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                      const uint32_t* host_address,
