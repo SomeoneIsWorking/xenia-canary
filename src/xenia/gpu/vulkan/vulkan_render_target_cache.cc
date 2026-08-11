@@ -1076,6 +1076,21 @@ bool VulkanRenderTargetCache::Resolve(
       uint32_t dump_pitch;
       resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used,
                                         dump_rows, dump_pitch);
+      // The format the COPY will decode these bits under -- the other half of
+      // the pair the dump prints per owning render target just below.
+      XELOGE("Resolve: copy decodes EDRAM base {} as {} ({}), is_depth {}",
+             dump_base,
+             resolve_info.IsCopyingDepth()
+                 ? xenos::GetDepthRenderTargetFormatName(
+                       xenos::DepthRenderTargetFormat(
+                           resolve_info.depth_edram_info.format))
+                 : xenos::GetColorRenderTargetFormatName(
+                       xenos::ColorRenderTargetFormat(
+                           resolve_info.color_edram_info.format)),
+             resolve_info.IsCopyingDepth()
+                 ? resolve_info.depth_edram_info.format
+                 : resolve_info.color_edram_info.format,
+             uint32_t(resolve_info.IsCopyingDepth()));
       DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch);
     }
 
@@ -6060,6 +6075,32 @@ void VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base,
   }
   XELOGE("DumpRenderTargets: EDRAM base {} -> {} rectangle(s)", dump_base,
          dump_rectangles_.size());
+  // WHAT FORMAT THE BITS ARE IN WHEN THEY REACH THE COPY. The copy shader
+  // decodes the EDRAM buffer under the format the RESOLVE declares
+  // (RB_COLOR_INFO of copy_src_select); the dump encodes it under the format of
+  // whatever render target OWNS the range. When those two differ the console is
+  // reinterpreting one layout as another, and that is the whole question for
+  // the port's two near-black k_2_10_10_10 copies -- our renderer converts
+  // there and lands at 0.087 where this emulator lands at 0.176. Neither number
+  // says WHICH of the two is reinterpreting; this line does.
+  // Printed for EVERY dumped rectangle including the matching case, so a
+  // resolve that does no reinterpretation says so rather than being silent and
+  // indistinguishable from a probe that never ran.
+  for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+    RenderTargetKey owner =
+        static_cast<VulkanRenderTarget*>(rectangle.render_target)->key();
+    XELOGE(
+        "DumpRenderTargets:   owner base {} pitch32 {} msaa {} is_depth {} "
+        "holds format {} ({})",
+        owner.base_tiles, owner.pitch_tiles_at_32bpp,
+        uint32_t(owner.msaa_samples), uint32_t(owner.is_depth),
+        owner.resource_format,
+        owner.is_depth
+            ? xenos::GetDepthRenderTargetFormatName(
+                  xenos::DepthRenderTargetFormat(owner.resource_format))
+            : xenos::GetColorRenderTargetFormatName(
+                  xenos::ColorRenderTargetFormat(owner.resource_format)));
+  }
 
   // Clear previously set temporary indices.
   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
