@@ -326,6 +326,20 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // frames; the runtime's GEARS_DRAW_FRAME_AFTER_GAMEPLAY is the same offset.
   uint32_t gears_resolve_dump_after_ = 0;
   uint32_t gears_resolve_dump_busiest_ = 0;
+  // How many CONSECUTIVE frames the dump covers, starting at
+  // gears_resolve_dump_frame_ (GEARS_ORACLE_DUMP_FRAMES, default 1). The two
+  // emulators advance the guest by wall-clock delta time, so equal frame
+  // INDICES are not equal game time; a window lets the comparison choose.
+  uint32_t gears_resolve_dump_frames_ = 1;
+  // Whether THIS guest frame is inside that window. One predicate, used by
+  // both dump sites -- they were separate copies of the same condition and
+  // would have drifted the moment the window was added.
+  bool GearsDumpingThisFrame() const {
+    return !gears_resolve_dump_dir_.empty() && gears_resolve_dump_frame_ != 0 &&
+           guest_swap_count() >= gears_resolve_dump_frame_ &&
+           guest_swap_count() <
+               gears_resolve_dump_frame_ + gears_resolve_dump_frames_;
+  }
   // The LAST DRAW BEFORE EACH COPY, printed at IssueCopy. Pairing draws across
   // the two emulators by index or by shader hash does not work -- they count
   // draws differently and hash microcode differently (FNV-1a there, XXH3 here)

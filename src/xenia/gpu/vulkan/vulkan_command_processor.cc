@@ -210,6 +210,19 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("oracle: resolve dump waits for the first frame with >= {} draws",
            gears_resolve_dump_min_draws_);
   }
+  // A WINDOW OF FRAMES, NOT ONE. The two emulators advance the guest by
+  // WALL-CLOCK delta time, so the same frame INDEX is not the same game time --
+  // measured: two runs of this oracle three days apart dumped their frame 873
+  // and 875 with a different number of shadow-casting lights, and the port was
+  // compared against whichever one it got. Dumping several consecutive frames
+  // lets the comparison PICK the console frame that is at the port's scene and
+  // say which it picked, instead of assuming.
+  if (const char* gears_nfenv = std::getenv("GEARS_ORACLE_DUMP_FRAMES")) {
+    gears_resolve_dump_frames_ =
+        std::max(1u, uint32_t(std::strtoul(gears_nfenv, nullptr, 10)));
+    XELOGI("oracle: dumping {} consecutive frames of resolves",
+           gears_resolve_dump_frames_);
+  }
   if (const char* gears_agenv = std::getenv("GEARS_ORACLE_DUMP_AFTER_GAMEPLAY")) {
     gears_resolve_dump_after_ = std::strtoul(gears_agenv, nullptr, 10);
     XELOGI("oracle: resolve dump waits {} further frames after the first"
@@ -2013,9 +2026,7 @@ void VulkanCommandProcessor::ProbeSharedMemoryRange(const char* when,
   // frame it is dumping, so the dump path bypasses both gates. Sampling it
   // would silently drop passes and leave a filmstrip with holes that reads as
   // "the console did not render that pass".
-  const bool dumping = !gears_resolve_dump_dir_.empty() &&
-                       gears_resolve_dump_frame_ != 0 &&
-                       guest_swap_count() == gears_resolve_dump_frame_;
+  const bool dumping = GearsDumpingThisFrame();
   if (!dumping) {
     if (cvars::gears_probe_front_buffer <= 0) {
       return;
@@ -3511,9 +3522,7 @@ bool VulkanCommandProcessor::IssueCopy() {
   // than as an instrument that is too expensive. The frame is selected in
   // SetupContext -- by content (GEARS_ORACLE_DUMP_MIN_DRAWS) or pinned by index
   // -- and without a selector the dump is off rather than everywhere.
-  const bool dump_this_frame =
-      !gears_resolve_dump_dir_.empty() && gears_resolve_dump_frame_ != 0 &&
-      guest_swap_count() == gears_resolve_dump_frame_;
+  const bool dump_this_frame = GearsDumpingThisFrame();
   if (gears_probe_after_resolve_ || dump_this_frame) {
     EndSubmission(true);
     // Tagged with the guest frame, this frame's copy ordinal, and the pass's
