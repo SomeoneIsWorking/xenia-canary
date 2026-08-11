@@ -3563,11 +3563,20 @@ bool VulkanCommandProcessor::IssueCopy() {
         // otherwise identical keys -- decoding a 16-bit-float buffer as
         // k_8_8_8_8 produces a plausible image of the wrong pass, which is the
         // most misleading artefact the comparison could emit.
-        fmt::format("f{}_copy{}_src{}{:03X}_{}x{}_f{}", guest_swap_count(),
+        // ...and so is the DESTINATION ENDIAN, for the same reason one level
+        // down: the bytes cannot be read without it. Every 8-byte destination
+        // in this title's frames is k8in16, and reading one of them
+        // little-endian gives a range of -34368..34400 and a mean 15x the
+        // truth -- which was written up as a renderer defect before the
+        // console's own log of this field retracted it (catalog #96). A
+        // comparison that has to assume this is a comparison that will
+        // eventually assume wrong.
+        fmt::format("f{}_copy{}_src{}{:03X}_{}x{}_f{}_e{}", guest_swap_count(),
                     copy_index, copy_from_depth ? 'D' : 'C', copy_src_base,
                     copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] & 0x3FFF,
                     (copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] >> 16) & 0x3FFF,
-                    uint32_t(copy_dest_info.copy_dest_format))
+                    uint32_t(copy_dest_info.copy_dest_format),
+                    uint32_t(copy_dest_info.copy_dest_endian))
             .c_str(),
         written_address, written_length);
     if (dump_this_frame) {
