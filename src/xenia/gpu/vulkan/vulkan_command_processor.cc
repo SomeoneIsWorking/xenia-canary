@@ -1958,7 +1958,9 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     std::string line = fmt::format("{}\t{}", gears_draw_stream_frame_++,
                                    gears_draws_recorded_);
     for (const auto& [pair, n] : gears_draw_stream_counts_)
-      line += fmt::format("\t{:016x}:{:016x}:{}", pair.first, pair.second, n);
+      line += fmt::format("\t{:016x}:{:016x}:{:08x}:{:08x}:{:08x}:{}", pair.vs,
+                          pair.ps, pair.depth_control, pair.stencil_ref_mask,
+                          pair.blend0, n);
     line += '\n';
     std::fwrite(line.data(), 1, line.size(), gears_draw_stream_);
     std::fflush(gears_draw_stream_);
@@ -3355,7 +3357,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       }
       return h;
     };
-    ++gears_draw_stream_counts_[{gears_hash(vertex_shader), gears_hash(pixel_shader)}];
+    ++gears_draw_stream_counts_[{
+        gears_hash(vertex_shader), gears_hash(pixel_shader),
+        regs[XE_GPU_REG_RB_DEPTHCONTROL],
+        regs[XE_GPU_REG_RB_STENCILREFMASK],
+        regs[XE_GPU_REG_RB_BLENDCONTROL0]}];
   }
   if (primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||

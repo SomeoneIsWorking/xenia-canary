@@ -17,6 +17,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -357,7 +358,23 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // needs no frame-exact alignment; see the accumulate site in IssueDraw.
   std::FILE* gears_draw_stream_ = nullptr;
   uint64_t gears_draw_stream_frame_ = 0;
-  std::map<std::pair<uint64_t, uint64_t>, uint32_t> gears_draw_stream_counts_;
+  // KEYED ON STATE AS WELL AS SHADERS. Two draws of the same shader pair with
+  // different depth/stencil or blend state are different draws, and the port's
+  // remaining shadow-mask difference is exactly there: everything that pass
+  // reads matches the console and every draw it submits matches the console,
+  // so what is left is the state those draws carry (gears1 catalog #91). The
+  // three registers are the ones that decide it -- RB_DEPTHCONTROL (depth test,
+  // write, function, and the whole stencil test), RB_STENCILREFMASK (ref, mask,
+  // write mask) and RB_BLENDCONTROL0.
+  struct GearsDrawKey {
+    uint64_t vs, ps;
+    uint32_t depth_control, stencil_ref_mask, blend0;
+    bool operator<(const GearsDrawKey& o) const {
+      return std::tie(vs, ps, depth_control, stencil_ref_mask, blend0) <
+             std::tie(o.vs, o.ps, o.depth_control, o.stencil_ref_mask, o.blend0);
+    }
+  };
+  std::map<GearsDrawKey, uint32_t> gears_draw_stream_counts_;
 
   Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                      const uint32_t* host_address,
