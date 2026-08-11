@@ -3315,6 +3315,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 
   // Draw.
   ++gears_draws_recorded_;
+  // The state a copy's preceding draw ran under, kept for IssueCopy to print.
+  gears_last_draw_index_ = gears_draws_recorded_;
+  gears_last_draw_mode_ =
+      uint32_t(regs.Get<reg::RB_MODECONTROL>().edram_mode);
+  gears_last_color_info_ = regs[XE_GPU_REG_RB_COLOR_INFO];
+  gears_last_color_mask_ = regs[XE_GPU_REG_RB_COLOR_MASK];
+  gears_last_norm_color_mask_ = normalized_color_mask;
+  gears_last_blend0_ = regs[XE_GPU_REG_RB_BLENDCONTROL0];
   // GEARS_ORACLE_DRAW_STREAM: accumulate WHAT THE GUEST ASKED THE GPU TO DO this
   // frame -- the multiset of (vertex shader, pixel shader) pairs it bound. The
   // draw stream is the guest's own output, so it is where a difference between
@@ -3522,6 +3530,18 @@ bool VulkanCommandProcessor::IssueCopy() {
     // either: the two renderers do not execute the same number of copies.
     const uint32_t copy_index = gears_resolve_dump_copy_++;
     const RegisterFile& copy_regs = *register_file_;
+    // WHAT THE DRAW BEFORE THIS COPY RAN UNDER. The copy is what pairs across
+    // the two emulators, so the draw before it is the one pass both sides can
+    // be compared at (catalog #91: our shadow-mask pass writes the same binary
+    // mask as this one but blends it against a different destination).
+    XELOGE(
+        "oracle: copy {} preceded by draw {}: edram_mode {} RB_COLOR_INFO {:08X}"
+        " (base {:03X} fmt {}) RB_COLOR_MASK {:08X} normalized {:X}"
+        " RB_BLENDCONTROL0 {:08X}",
+        copy_index, gears_last_draw_index_, gears_last_draw_mode_,
+        gears_last_color_info_, gears_last_color_info_ & 0xFFF,
+        (gears_last_color_info_ >> 16) & 0xF, gears_last_color_mask_,
+        gears_last_norm_color_mask_, gears_last_blend0_);
     const uint32_t copy_src_select =
         copy_regs[XE_GPU_REG_RB_COPY_CONTROL] & 0x7;
     const bool copy_from_depth = copy_src_select >= 4;
