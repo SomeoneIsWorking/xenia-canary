@@ -294,6 +294,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // GEARS: which pixel shader's float constants to write out once, from
   // GEARS_ORACLE_PS_CONSTS (a hex ucode hash). Zero disables it entirely,
   // so a normal run pays one integer compare per draw and nothing else.
+  // GEARS_ORACLE_REG_WATCH hit count, reported per swap so a register that is
+  // never written says so rather than printing nothing.
+  uint64_t gears_reg_watch_hits_ = 0;
   uint64_t gears_const_dump_hash_ = 0;
   uint64_t gears_dump_at_frame_ = 0;
   uint32_t gears_vs_binds_this_frame_ = 0;

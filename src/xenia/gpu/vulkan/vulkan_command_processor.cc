@@ -1471,6 +1471,24 @@ void VulkanCommandProcessor::ShutdownContext() {
 }
 
 void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+  // GEARS_ORACLE_REG_WATCH=<hex reg>: every write to that register, with the
+  // value as bits and as a float. The port side has the same watch; the pair
+  // answers whether a shader constant that differs between the two holds
+  // different bytes IN GUEST MEMORY (a CPU-side difference) or is merely read
+  // differently. A register never written prints nothing, so the count is
+  // reported at the end of every frame rather than left to silence.
+  static const uint32_t gears_reg_watch = []() -> uint32_t {
+    const char* e = std::getenv("GEARS_ORACLE_REG_WATCH");
+    return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0u;
+  }();
+  if (gears_reg_watch != 0 && index == gears_reg_watch) {
+    float as_float;
+    std::memcpy(&as_float, &value, sizeof(as_float));
+    ++gears_reg_watch_hits_;
+    XELOGI("GEARS_REG_WATCH: reg {:#x} <- {:#010x} ({})", index, value,
+           as_float);
+  }
+
   CommandProcessor::WriteRegister(index, value);
 
   if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
@@ -1543,6 +1561,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                        uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
+
+  // GEARS_ORACLE_REG_WATCH census, every 60th swap. A watched register that is
+  // never written would otherwise print NOTHING, which reads exactly like "the
+  // register is fine"; and a run under this knob is always ended by a signal,
+  // so an exit-time report is one that never prints.
+  {
+    const char* watch_env = std::getenv("GEARS_ORACLE_REG_WATCH");
+    static uint64_t swaps = 0;
+    if (watch_env != nullptr && (swaps++ % 60) == 0) {
+      XELOGI("GEARS_REG_WATCH census (cumulative): reg {} = {}{}", watch_env,
+             gears_reg_watch_hits_,
+             gears_reg_watch_hits_ == 0 ? " (NEVER WRITTEN)" : "");
+    }
+  }
 
   // Named for the same reason IssueDraw's early-outs are: from outside, a swap
   // that produced no image is indistinguishable from a swap that never
