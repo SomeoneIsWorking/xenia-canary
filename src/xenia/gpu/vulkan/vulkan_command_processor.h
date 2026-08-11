@@ -326,6 +326,18 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // frames; the runtime's GEARS_DRAW_FRAME_AFTER_GAMEPLAY is the same offset.
   uint32_t gears_resolve_dump_after_ = 0;
   uint32_t gears_resolve_dump_busiest_ = 0;
+  // The LAST DRAW BEFORE EACH COPY, printed at IssueCopy. Pairing draws across
+  // the two emulators by index or by shader hash does not work -- they count
+  // draws differently and hash microcode differently (FNV-1a there, XXH3 here)
+  // -- but "the draw immediately before copy N" is the same draw on both sides
+  // by construction, because the copies themselves pair. This is how the state
+  // of one specific pass can be compared at all (catalog #91).
+  uint64_t gears_last_draw_index_ = 0;
+  uint32_t gears_last_draw_mode_ = 0;
+  uint32_t gears_last_color_info_ = 0;
+  uint32_t gears_last_color_mask_ = 0;
+  uint32_t gears_last_norm_color_mask_ = 0;
+  uint32_t gears_last_blend0_ = 0;
   // GEARS_ORACLE_DRAW_STREAM=<path>: one line per frame naming the (vs, ps)
   // pairs the guest bound and how often. The cross-emulator comparison that
   // needs no frame-exact alignment; see the accumulate site in IssueDraw.
