@@ -1995,12 +1995,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   gears_vs_binds_this_frame_ = 0;
   // A constants dump that never fired must SAY so, with its denominator. A
   // missing file reads as "the run failed"; this names which of the two it is.
-  if (gears_vconst_ordinal_ >= 0 && !gears_vconst_ordinal_fired_) {
+  // ONCE, and only once the dump window has actually been ENTERED AND LEFT: on
+  // every swap it fires for the whole boot -- thousands of identical lines
+  // before the frame it is waiting for even exists -- which is noise that
+  // buries the one line that matters rather than a report.
+  if (gears_vconst_ordinal_ >= 0 && !gears_vconst_ordinal_fired_ &&
+      !gears_vconst_ordinal_reported_ && gears_draw_order_index_ > 0 &&
+      !GearsDumpingThisFrame()) {
+    gears_vconst_ordinal_reported_ = true;
     XELOGE(
-        "gears: VS_CONSTS_ORDINAL {} did NOT fire; the dumped frame has issued "
-        "{} draws so far, and this frame {} the dumped one",
-        gears_vconst_ordinal_, gears_draw_order_index_,
-        GearsDumpingThisFrame() ? "IS" : "is NOT");
+        "gears: VS_CONSTS_ORDINAL {} did NOT fire, and the dump window is now "
+        "PAST: it issued {} draws in total, so that ordinal does not exist in "
+        "it",
+        gears_vconst_ordinal_, gears_draw_order_index_);
   }
   XELOGE(
       "IssueSwap: this frame's draws: {} recorded, {} dropped with no "
@@ -3399,7 +3406,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // BIG-ENDIAN ucode bytes. Xenia's own ucode_data_hash() is a different function
   // over the same bytes, and keying on it would make every shader look unique to
   // the other side -- a total mismatch that reads like a real divergence.
-  if (gears_draw_stream_) {
+  // The ORDER log and the ordinal counter live in here too, and they must not
+  // depend on the STREAM knob: they did, and a run that asked for the ordinal
+  // dump alone silently counted zero draws and dumped nothing, while the
+  // resolve dump for the same frame worked -- which reads as "the frame was
+  // never reached" rather than as one knob quietly requiring another.
+  if (gears_draw_stream_ || gears_draw_order_ != nullptr ||
+      gears_vconst_ordinal_ >= 0) {
     auto gears_hash = [](const Shader* shader) -> uint64_t {
       if (!shader) return 0;
       uint64_t h = 0xCBF29CE484222325ull;
@@ -3410,11 +3423,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       }
       return h;
     };
-    ++gears_draw_stream_counts_[{
-        gears_hash(vertex_shader), gears_hash(pixel_shader),
-        regs[XE_GPU_REG_RB_DEPTHCONTROL],
-        regs[XE_GPU_REG_RB_STENCILREFMASK],
-        regs[XE_GPU_REG_RB_BLENDCONTROL0]}];
+    if (gears_draw_stream_) {
+      ++gears_draw_stream_counts_[{
+          gears_hash(vertex_shader), gears_hash(pixel_shader),
+          regs[XE_GPU_REG_RB_DEPTHCONTROL],
+          regs[XE_GPU_REG_RB_STENCILREFMASK],
+          regs[XE_GPU_REG_RB_BLENDCONTROL0]}];
+    }
     // GEARS_ORACLE_DRAW_ORDER: the same draws IN SUBMISSION ORDER, for the
     // dumped frame only. The counts above are a MULTISET and cannot see an
     // ARRANGEMENT: catalog #91 reaches a point where both sides issue the same
