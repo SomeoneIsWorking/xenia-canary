@@ -6344,8 +6344,21 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
         }
         if (gh == gears_vconst_dump_hash_) ++gears_vs_binds_this_frame_;
       }
+      // WHEN A DUMP WINDOW EXISTS, THE CONSTANTS MUST COME FROM INSIDE IT.
+      // These constants are used as a CAMERA to gate the port's own capture,
+      // and the resolves they are compared against are the ones this window
+      // dumps -- so constants from outside it name a viewpoint the console
+      // never dumped a frame for, and the pair cannot be scored. Without this
+      // the dump fires at the first bind of the shader, long before gameplay
+      // (GEARS_ORACLE_DUMP_AT_FRAME defaults to 0), which is a camera from the
+      // loading screen. Falls back to the old rule when no window is set, so
+      // every existing use of this knob behaves as before.
+      const bool gears_vconst_when =
+          (gears_resolve_dump_min_draws_ || gears_resolve_dump_frame_)
+              ? GearsDumpingThisFrame()
+              : guest_swap_count() >= gears_dump_at_frame_;
       if (gears_vconst_dump_hash_ && vertex_shader && !gears_vconst_dumped_ &&
-          guest_swap_count() >= gears_dump_at_frame_) {
+          gears_vconst_when) {
         uint64_t gears_h = 0xCBF29CE484222325ull;
         for (uint32_t gd : vertex_shader->ucode_data()) {
           const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
