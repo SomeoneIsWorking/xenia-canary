@@ -314,6 +314,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // local transform, so a first-bind dump compares the wrong draw. -1 = off.
   int64_t gears_vconst_ordinal_ = -1;
   bool gears_vconst_ordinal_fired_ = false;
+  bool gears_vconst_ordinal_reported_ = false;
   bool gears_const_dumped_ = false;
   uint32_t gears_draws_recorded_ = 0;
   uint32_t gears_draws_no_rasterization_ = 0;
