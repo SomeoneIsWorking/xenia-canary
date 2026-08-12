@@ -174,6 +174,13 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("gears: will dump vertex shader {:016X} float constants once",
            gears_vconst_dump_hash_);
   }
+  if (const char* gears_psenv = std::getenv("GEARS_ORACLE_PRIM_STATS")) {
+    gears_prim_stats_hash_ = std::strtoull(gears_psenv, nullptr, 16);
+    XELOGI(
+        "gears: will count assembled and post-clip primitives for every draw "
+        "of vertex shader {:016X} in the dumped frame",
+        gears_prim_stats_hash_);
+  }
   if (const char* gears_voenv = std::getenv("GEARS_ORACLE_VS_CONSTS_ORDINAL")) {
     gears_vconst_ordinal_ = std::strtoll(gears_voenv, nullptr, 10);
     XELOGI(
@@ -1993,6 +2000,59 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
            gears_vs_binds_this_frame_, guest_swap_count());
   }
   gears_vs_binds_this_frame_ = 0;
+  // GEARS_ORACLE_PRIM_STATS: read the counts back once the frame's work has
+  // completed. EndSubmission(true) above is what makes WAIT_BIT safe here.
+  // The report always carries its DENOMINATORS -- how many draws were
+  // measured, how many were dropped past the pool's capacity, and whether the
+  // query was even available -- because "0 primitives" and "nothing was
+  // measured" are the same number and not the same answer.
+  if (gears_prim_stats_hash_ && gears_prim_stats_pool_ != VK_NULL_HANDLE &&
+      gears_prim_stats_used_) {
+    const ui::vulkan::VulkanDevice* const gears_device = GetVulkanDevice();
+    const ui::vulkan::VulkanDevice::Functions& gears_dfn =
+        gears_device->functions();
+    std::vector<uint64_t> gears_stats(size_t(gears_prim_stats_used_) * 3, 0);
+    VkResult gears_r = gears_dfn.vkGetQueryPoolResults(
+        gears_device->device(), gears_prim_stats_pool_, 0,
+        gears_prim_stats_used_, gears_stats.size() * sizeof(uint64_t),
+        gears_stats.data(), 3 * sizeof(uint64_t),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (gears_r != VK_SUCCESS) {
+      XELOGE("gears: PRIM_STATS readback FAILED ({}); no counts are reported.",
+             int(gears_r));
+    } else {
+      uint64_t gt_ia = 0, gt_clip = 0, gt_frag = 0;
+      for (uint32_t gi = 0; gi < gears_prim_stats_used_; ++gi) {
+        XELOGE(
+            "gears: PRIM_STATS vs {:016X} draw {} of {}: assembled {}, "
+            "survived clip {}, fragment invocations {}",
+            gears_prim_stats_hash_, gi + 1, gears_prim_stats_used_,
+            gears_stats[gi * 3], gears_stats[gi * 3 + 1],
+            gears_stats[gi * 3 + 2]);
+        gt_ia += gears_stats[gi * 3];
+        gt_clip += gears_stats[gi * 3 + 1];
+        gt_frag += gears_stats[gi * 3 + 2];
+      }
+      XELOGE(
+          "gears: PRIM_STATS vs {:016X} TOTAL over {} measured draw(s) of the "
+          "dumped frame ({} more were dropped past the pool's capacity of {}): "
+          "assembled {}, survived clip {}, fragment invocations {}",
+          gears_prim_stats_hash_, gears_prim_stats_used_,
+          gears_prim_stats_overflow_, kGearsPrimStatsCapacity, gt_ia, gt_clip,
+          gt_frag);
+    }
+    gears_dfn.vkResetQueryPool(gears_device->device(), gears_prim_stats_pool_,
+                               0, kGearsPrimStatsCapacity);
+    gears_prim_stats_used_ = 0;
+    gears_prim_stats_overflow_ = 0;
+  } else if (gears_prim_stats_hash_ && !gears_prim_stats_unavailable_ &&
+             gears_draw_order_index_ > 0 && !GearsDumpingThisFrame() &&
+             gears_prim_stats_pool_ == VK_NULL_HANDLE) {
+    XELOGE(
+        "gears: PRIM_STATS vs {:016X} measured NOTHING: the dump window came "
+        "and went with {} draws in it and not one bound that vertex shader.",
+        gears_prim_stats_hash_, gears_draw_order_index_);
+  }
   // A constants dump that never fired must SAY so, with its denominator. A
   // missing file reads as "the run failed"; this names which of the two it is.
   // ONCE, and only once the dump window has actually been ENTERED AND LEFT: on
@@ -3456,6 +3516,74 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       std::fflush(gears_draw_order_);
     }
   }
+  // GEARS_ORACLE_PRIM_STATS: wrap this draw in a pipeline-statistics query if
+  // it belongs to the shader under investigation. The pool is created on first
+  // use because the device and its functions are only available here, and a
+  // device that cannot do it must SAY so once rather than report zero
+  // primitives, which is indistinguishable from a shader that drew nothing.
+  bool gears_prim_stats_active = false;
+  if (gears_prim_stats_hash_ && GearsDumpingThisFrame() && vertex_shader &&
+      !gears_prim_stats_unavailable_) {
+    uint64_t gh = 0xCBF29CE484222325ull;
+    for (uint32_t gd : vertex_shader->ucode_data()) {
+      const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
+                             uint8_t(gd >> 8), uint8_t(gd)};
+      for (int gi = 0; gi < 4; ++gi) { gh ^= gb[gi]; gh *= 0x100000001B3ull; }
+    }
+    if (gh == gears_prim_stats_hash_) {
+      const ui::vulkan::VulkanDevice* const gears_device = GetVulkanDevice();
+      const ui::vulkan::VulkanDevice::Functions& gears_dfn =
+          gears_device->functions();
+      if (gears_prim_stats_pool_ == VK_NULL_HANDLE) {
+        if (!gears_device->properties().pipelineStatisticsQuery ||
+            !gears_device->properties().hostQueryReset ||
+            gears_dfn.vkResetQueryPool == nullptr) {
+          gears_prim_stats_unavailable_ = true;
+          XELOGE(
+              "gears: PRIM_STATS CANNOT RUN on this device -- "
+              "pipelineStatisticsQuery {}, hostQueryReset {}. NO primitive "
+              "counts will be produced; do not read the absence as zero.",
+              gears_device->properties().pipelineStatisticsQuery,
+              gears_device->properties().hostQueryReset);
+        } else {
+          VkQueryPoolCreateInfo pi;
+          pi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+          pi.pNext = nullptr;
+          pi.flags = 0;
+          pi.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+          pi.queryCount = kGearsPrimStatsCapacity;
+          pi.pipelineStatistics =
+              VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
+              VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
+              VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+          if (gears_dfn.vkCreateQueryPool(gears_device->device(), &pi, nullptr,
+                                          &gears_prim_stats_pool_) !=
+              VK_SUCCESS) {
+            gears_prim_stats_pool_ = VK_NULL_HANDLE;
+            gears_prim_stats_unavailable_ = true;
+            XELOGE(
+                "gears: PRIM_STATS could not create its query pool. NO counts "
+                "will be produced; do not read the absence as zero.");
+          } else {
+            gears_dfn.vkResetQueryPool(gears_device->device(),
+                                       gears_prim_stats_pool_, 0,
+                                       kGearsPrimStatsCapacity);
+          }
+        }
+      }
+      if (gears_prim_stats_pool_ != VK_NULL_HANDLE) {
+        if (gears_prim_stats_used_ < kGearsPrimStatsCapacity) {
+          deferred_command_buffer_.CmdVkBeginQuery(
+              gears_prim_stats_pool_, gears_prim_stats_used_, 0);
+          gears_prim_stats_active = true;
+        } else {
+          // A cap that silently drops draws would understate the total and
+          // make the console look like it draws less than it does.
+          ++gears_prim_stats_overflow_;
+        }
+      }
+    }
+  }
   if (primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
       shader_32bit_index_dma) {
@@ -3491,6 +3619,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
             : VK_INDEX_TYPE_UINT32);
     deferred_command_buffer_.CmdVkDrawIndexed(
         primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
+  }
+  if (gears_prim_stats_active) {
+    deferred_command_buffer_.CmdVkEndQuery(gears_prim_stats_pool_,
+                                           gears_prim_stats_used_);
+    ++gears_prim_stats_used_;
   }
 
   // Invalidate textures in memexported memory and watch for changes.

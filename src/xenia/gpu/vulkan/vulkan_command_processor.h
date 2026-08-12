@@ -315,6 +315,20 @@ class VulkanCommandProcessor final : public CommandProcessor {
   int64_t gears_vconst_ordinal_ = -1;
   bool gears_vconst_ordinal_fired_ = false;
   bool gears_vconst_ordinal_reported_ = false;
+  // GEARS_ORACLE_PRIM_STATS=<vs hash hex>: how many primitives every draw of
+  // one vertex shader ASSEMBLES and how many SURVIVE CLIPPING, on the console
+  // side. Catalog #91 needs this and nothing else can supply it: a paired
+  // capture never lands on the same guest state, so a per-draw comparison
+  // joined by ordinal compares different moments, but a per-shader TOTAL over
+  // one frame is drift-tolerant -- our frame assembles 54,352 primitives with
+  // that shader and keeps 235, and the only question is whether the reference
+  // keeps a comparable fraction. 0 = off.
+  uint64_t gears_prim_stats_hash_ = 0;
+  VkQueryPool gears_prim_stats_pool_ = VK_NULL_HANDLE;
+  uint32_t gears_prim_stats_used_ = 0;
+  uint32_t gears_prim_stats_overflow_ = 0;
+  bool gears_prim_stats_unavailable_ = false;
+  static constexpr uint32_t kGearsPrimStatsCapacity = 256;
   bool gears_const_dumped_ = false;
   uint32_t gears_draws_recorded_ = 0;
   uint32_t gears_draws_no_rasterization_ = 0;

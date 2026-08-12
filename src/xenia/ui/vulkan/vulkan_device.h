@@ -107,6 +107,10 @@ class VulkanDevice {
     bool fillModeNonSolid = false;
     bool samplerAnisotropy = false;
     bool occlusionQueryPrecise = false;
+    // GEARS: pipeline statistics queries, for the per-draw
+    // primitive counts catalog #91 needs from the reference. Not
+    // used by emulation, so it is requested but never required.
+    bool pipelineStatisticsQuery = false;
     bool vertexPipelineStoresAndAtomics = false;
     bool fragmentStoresAndAtomics = false;
     bool shaderClipDistance = false;
