@@ -174,6 +174,13 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("gears: will dump vertex shader {:016X} float constants once",
            gears_vconst_dump_hash_);
   }
+  if (const char* gears_voenv = std::getenv("GEARS_ORACLE_VS_CONSTS_ORDINAL")) {
+    gears_vconst_ordinal_ = std::strtoll(gears_voenv, nullptr, 10);
+    XELOGI(
+        "gears: will dump the vertex float constants of draw ordinal {} of the "
+        "dumped frame -> scratch/oracle/vs_consts_ordinal.txt",
+        gears_vconst_ordinal_);
+  }
   if (const char* gears_oenv = std::getenv("GEARS_ORACLE_DRAW_ORDER")) {
     gears_draw_order_ = std::fopen(gears_oenv, "wb");
     XELOGI("gears: draw ORDER for the dumped frame -> {} ({})", gears_oenv,
@@ -1986,6 +1993,15 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
            gears_vs_binds_this_frame_, guest_swap_count());
   }
   gears_vs_binds_this_frame_ = 0;
+  // A constants dump that never fired must SAY so, with its denominator. A
+  // missing file reads as "the run failed"; this names which of the two it is.
+  if (gears_vconst_ordinal_ >= 0 && !gears_vconst_ordinal_fired_) {
+    XELOGE(
+        "gears: VS_CONSTS_ORDINAL {} did NOT fire; the dumped frame has issued "
+        "{} draws so far, and this frame {} the dumped one",
+        gears_vconst_ordinal_, gears_draw_order_index_,
+        GearsDumpingThisFrame() ? "IS" : "is NOT");
+  }
   XELOGE(
       "IssueSwap: this frame's draws: {} recorded, {} dropped with no "
       "rasterization and no memory export, {} dropped with zero host vertices",
@@ -3406,6 +3422,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     // the pass's first group where we spend two, which is invisible to any
     // comparison of counts. One line per draw, with the vertex count, so the
     // pass can be laid side by side against our per-draw table.
+    // The ordinal advances for every draw of a dumped frame whether or not the
+    // order FILE is open, because GEARS_ORACLE_VS_CONSTS_ORDINAL keys off it
+    // and would otherwise silently name a different draw depending on an
+    // unrelated knob.
+    if (GearsDumpingThisFrame() && gears_draw_order_ == nullptr) {
+      ++gears_draw_order_index_;
+    }
     if (gears_draw_order_ != nullptr && GearsDumpingThisFrame()) {
       const std::string line = fmt::format(
           "{}\t{:016x}\t{:016x}\t{:08x}\t{:08x}\t{:08x}\t{}\n",
@@ -6191,6 +6214,61 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
             }
             std::fclose(f);
           }
+        }
+      }
+      // GEARS_ORACLE_VS_CONSTS_ORDINAL: the same constants, but for the draw
+      // the ORDER LOG names rather than the first bind of a hash. Read at the
+      // moment they are uploaded, which is the value the draw about to be
+      // submitted will actually see -- gears_draw_order_index_ has not been
+      // incremented for this draw yet, so it IS this draw's ordinal.
+      if (gears_vconst_ordinal_ >= 0 && !gears_vconst_ordinal_fired_ &&
+          GearsDumpingThisFrame() &&
+          int64_t(gears_draw_order_index_) == gears_vconst_ordinal_) {
+        gears_vconst_ordinal_fired_ = true;
+        uint64_t gears_ohash = 0xCBF29CE484222325ull;
+        if (vertex_shader) {
+          for (uint32_t gd : vertex_shader->ucode_data()) {
+            const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
+                                   uint8_t(gd >> 8), uint8_t(gd)};
+            for (int gi = 0; gi < 4; ++gi) {
+              gears_ohash ^= gb[gi];
+              gears_ohash *= 0x100000001B3ull;
+            }
+          }
+        }
+        const uint8_t* src =
+            mapping - sizeof(float) * 4 * float_constant_count_vertex;
+        if (FILE* f =
+                std::fopen("scratch/oracle/vs_consts_ordinal.txt", "wb")) {
+          std::fprintf(f,
+                       "draw ordinal %lld of guest frame %llu, vs %016llX, %u "
+                       "vec4s\n",
+                       (long long)gears_vconst_ordinal_,
+                       (unsigned long long)guest_swap_count(),
+                       (unsigned long long)gears_ohash,
+                       float_constant_count_vertex);
+          // The buffer is DENSE-PACKED -- only the constants the shader's own
+          // bitmap marks as used are uploaded, in bank order -- so the slot a
+          // value sits in is NOT its guest register number. Walking the same
+          // bitmap the packer walked recovers the guest index, which is what
+          // our side's dump prints and the only thing the two can be joined
+          // on. Printing the slot index as if it were c[n] silently misaligns
+          // every comparison unless the shader happens to use c0..cN.
+          uint32_t gears_slot = 0;
+          for (uint32_t gi = 0; gi < 4; ++gi) {
+            uint64_t gmap = current_float_constant_map_vertex_[gi];
+            uint32_t gidx;
+            while (xe::bit_scan_forward(gmap, &gidx)) {
+              gmap &= ~(1ull << gidx);
+              float v[4];
+              std::memcpy(v, src + size_t(gears_slot) * 16, 16);
+              ++gears_slot;
+              std::fprintf(f, "c[%u]=(%g, %g, %g, %g)\n", (gi << 6) + gidx,
+                           v[0], v[1], v[2], v[3]);
+            }
+          }
+          std::fprintf(f, "packed %u of 256 constants\n", gears_slot);
+          std::fclose(f);
         }
       }
       current_constant_buffers_up_to_date_ |=

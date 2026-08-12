@@ -306,6 +306,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint32_t gears_vs_binds_this_frame_ = 0;
   uint64_t gears_vconst_dump_hash_ = 0;
   bool gears_vconst_dumped_ = false;
+  // GEARS_ORACLE_VS_CONSTS_ORDINAL=<n>: the vertex float constants for ONE
+  // NAMED DRAW of the dumped frame, keyed by the same submission ordinal
+  // GEARS_ORACLE_DRAW_ORDER writes. The hash-keyed dump above fires on the
+  // first bind and cannot answer catalog #91: that shader is bound six times
+  // in a gameplay frame and each bind carries a different bone palette and
+  // local transform, so a first-bind dump compares the wrong draw. -1 = off.
+  int64_t gears_vconst_ordinal_ = -1;
+  bool gears_vconst_ordinal_fired_ = false;
   bool gears_const_dumped_ = false;
   uint32_t gears_draws_recorded_ = 0;
   uint32_t gears_draws_no_rasterization_ = 0;
