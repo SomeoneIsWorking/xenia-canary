@@ -296,6 +296,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // so a normal run pays one integer compare per draw and nothing else.
   // GEARS_ORACLE_REG_WATCH hit count, reported per swap so a register that is
   // never written says so rather than printing nothing.
+  // GEARS_ORACLE_DRAW_ORDER: submission-order draw log for the dumped frame.
+  // The per-frame counts are a multiset and cannot see an arrangement.
+  std::FILE* gears_draw_order_ = nullptr;
+  uint32_t gears_draw_order_index_ = 0;
   uint64_t gears_reg_watch_hits_ = 0;
   uint64_t gears_const_dump_hash_ = 0;
   uint64_t gears_dump_at_frame_ = 0;

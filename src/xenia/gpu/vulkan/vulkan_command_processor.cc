@@ -174,6 +174,11 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("gears: will dump vertex shader {:016X} float constants once",
            gears_vconst_dump_hash_);
   }
+  if (const char* gears_oenv = std::getenv("GEARS_ORACLE_DRAW_ORDER")) {
+    gears_draw_order_ = std::fopen(gears_oenv, "wb");
+    XELOGI("gears: draw ORDER for the dumped frame -> {} ({})", gears_oenv,
+           gears_draw_order_ ? "open" : "FAILED TO OPEN, nothing will be written");
+  }
   if (const char* gears_senv = std::getenv("GEARS_ORACLE_DRAW_STREAM")) {
     gears_draw_stream_ = std::fopen(gears_senv, "wb");
     // A path that cannot be opened must not read as a frame with no draws.
@@ -3394,6 +3399,24 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         regs[XE_GPU_REG_RB_DEPTHCONTROL],
         regs[XE_GPU_REG_RB_STENCILREFMASK],
         regs[XE_GPU_REG_RB_BLENDCONTROL0]}];
+    // GEARS_ORACLE_DRAW_ORDER: the same draws IN SUBMISSION ORDER, for the
+    // dumped frame only. The counts above are a MULTISET and cannot see an
+    // ARRANGEMENT: catalog #91 reaches a point where both sides issue the same
+    // draws and the question is whether the console spends a shadow volume on
+    // the pass's first group where we spend two, which is invisible to any
+    // comparison of counts. One line per draw, with the vertex count, so the
+    // pass can be laid side by side against our per-draw table.
+    if (gears_draw_order_ != nullptr && GearsDumpingThisFrame()) {
+      const std::string line = fmt::format(
+          "{}\t{:016x}\t{:016x}\t{:08x}\t{:08x}\t{:08x}\t{}\n",
+          gears_draw_order_index_++, gears_hash(vertex_shader),
+          gears_hash(pixel_shader), regs[XE_GPU_REG_RB_DEPTHCONTROL],
+          regs[XE_GPU_REG_RB_STENCILREFMASK],
+          regs[XE_GPU_REG_RB_BLENDCONTROL0],
+          primitive_processing_result.host_draw_vertex_count);
+      std::fwrite(line.data(), 1, line.size(), gears_draw_order_);
+      std::fflush(gears_draw_order_);
+    }
   }
   if (primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
