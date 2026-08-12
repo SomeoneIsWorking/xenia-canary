@@ -65,6 +65,11 @@ XE_UI_VULKAN_FUNCTION(vkDestroyPipeline)
 XE_UI_VULKAN_FUNCTION(vkDestroyPipelineCache)
 XE_UI_VULKAN_FUNCTION(vkDestroyPipelineLayout)
 XE_UI_VULKAN_FUNCTION(vkDestroyQueryPool)
+// GEARS: read pipeline-statistics counts straight back on the CPU.
+// The ZPD pool copies its results into a buffer instead, which is
+// right for per-frame work but needless for a diagnostic that runs
+// after EndSubmission has already waited for the frame.
+XE_UI_VULKAN_FUNCTION(vkGetQueryPoolResults)
 XE_UI_VULKAN_FUNCTION(vkDestroyRenderPass)
 XE_UI_VULKAN_FUNCTION(vkDestroySampler)
 XE_UI_VULKAN_FUNCTION(vkDestroySemaphore)
