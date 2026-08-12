@@ -3505,13 +3505,23 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       ++gears_draw_order_index_;
     }
     if (gears_draw_order_ != nullptr && GearsDumpingThisFrame()) {
+      // The SCISSOR is appended because catalog #91 turns on it: our shadow
+      // atlas's clear quads are scissored to the whole 880x1440 atlas rather
+      // than to a tile, and that one difference would account both for the
+      // 21.1% of the buffer the console leaves at zero and for the one tile
+      // whose content moves when nothing should be drawing to it. Whether the
+      // console confines them is not answerable from our side.
+      auto gears_tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
+      auto gears_br = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
       const std::string line = fmt::format(
-          "{}\t{:016x}\t{:016x}\t{:08x}\t{:08x}\t{:08x}\t{}\n",
+          "{}\t{:016x}\t{:016x}\t{:08x}\t{:08x}\t{:08x}\t{}\t{}\t{}\t{}\t{}\n",
           gears_draw_order_index_++, gears_hash(vertex_shader),
           gears_hash(pixel_shader), regs[XE_GPU_REG_RB_DEPTHCONTROL],
           regs[XE_GPU_REG_RB_STENCILREFMASK],
           regs[XE_GPU_REG_RB_BLENDCONTROL0],
-          primitive_processing_result.host_draw_vertex_count);
+          primitive_processing_result.host_draw_vertex_count,
+          uint32_t(gears_tl.tl_x), uint32_t(gears_tl.tl_y),
+          uint32_t(gears_br.br_x), uint32_t(gears_br.br_y));
       std::fwrite(line.data(), 1, line.size(), gears_draw_order_);
       std::fflush(gears_draw_order_);
     }
