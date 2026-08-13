@@ -3527,15 +3527,24 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       // console confines them is not answerable from our side.
       auto gears_tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
       auto gears_br = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
+      // Keep the first eleven columns stable for the older ordering tools and
+      // append the ownership fields needed to walk a resolve's producers. A
+      // shader/state match alone cannot say which EDRAM surface the draw read
+      // or wrote, and the f7 frontier specifically crosses a colour-format
+      // relabel of 0x2D0 plus a shared depth/stencil image.
       const std::string line = fmt::format(
-          "{}\t{:016x}\t{:016x}\t{:08x}\t{:08x}\t{:08x}\t{}\t{}\t{}\t{}\t{}\n",
+          "{}\t{:016x}\t{:016x}\t{:08x}\t{:08x}\t{:08x}\t{}\t{}\t{}\t{}\t{}"
+          "\t{}\t{:08x}\t{:08x}\t{:x}\n",
           gears_draw_order_index_++, gears_hash(vertex_shader),
           gears_hash(pixel_shader), regs[XE_GPU_REG_RB_DEPTHCONTROL],
           regs[XE_GPU_REG_RB_STENCILREFMASK],
           regs[XE_GPU_REG_RB_BLENDCONTROL0],
           primitive_processing_result.host_draw_vertex_count,
           uint32_t(gears_tl.tl_x), uint32_t(gears_tl.tl_y),
-          uint32_t(gears_br.br_x), uint32_t(gears_br.br_y));
+          uint32_t(gears_br.br_x), uint32_t(gears_br.br_y),
+          uint32_t(regs.Get<reg::RB_MODECONTROL>().edram_mode),
+          regs[XE_GPU_REG_RB_COLOR_INFO], regs[XE_GPU_REG_RB_DEPTH_INFO],
+          normalized_color_mask);
       std::fwrite(line.data(), 1, line.size(), gears_draw_order_);
       std::fflush(gears_draw_order_);
     }
