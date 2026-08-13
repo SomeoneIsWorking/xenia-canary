@@ -352,6 +352,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // that many draws, the same rule our runtime applies) or pinned by index.
   uint64_t gears_resolve_dump_frame_ = 0;
   uint32_t gears_resolve_dump_min_draws_ = 0;
+  // Do not let an early high-draw UI frame arm the content selector while a
+  // scripted walk is still in progress. Zero leaves the constraint disabled.
+  uint64_t gears_resolve_dump_min_guest_frame_ = 0;
   // How many frames PAST the first gameplay frame to dump. The first one is a
   // fade from black on both emulators, so comparing it compares two black
   // frames; the runtime's GEARS_DRAW_FRAME_AFTER_GAMEPLAY is the same offset.

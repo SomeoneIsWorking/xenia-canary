@@ -229,6 +229,13 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("oracle: resolve dump waits for the first frame with >= {} draws",
            gears_resolve_dump_min_draws_);
   }
+  if (const char* gears_mfenv =
+          std::getenv("GEARS_ORACLE_DUMP_MIN_GUEST_FRAME")) {
+    gears_resolve_dump_min_guest_frame_ =
+        std::strtoull(gears_mfenv, nullptr, 10);
+    XELOGI("oracle: resolve dump ignores content candidates before guest frame {}",
+           gears_resolve_dump_min_guest_frame_);
+  }
   // A WINDOW OF FRAMES, NOT ONE. The two emulators advance the guest by
   // WALL-CLOCK delta time, so the same frame INDEX is not the same game time --
   // measured: two runs of this oracle three days apart dumped their frame 873
@@ -2093,7 +2100,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   if (gears_resolve_dump_min_draws_ && !gears_resolve_dump_frame_) {
     gears_resolve_dump_busiest_ =
         std::max(gears_resolve_dump_busiest_, gears_draws_recorded_);
-    if (gears_draws_recorded_ >= gears_resolve_dump_min_draws_) {
+    if (guest_swap_count() < gears_resolve_dump_min_guest_frame_) {
+      if (guest_swap_count() == 0 || (guest_swap_count() % 600) == 0) {
+        XELOGI("oracle: {} frames presented, content selector is ineligible until"
+               " guest frame {}. NOTHING has been dumped.",
+               guest_swap_count() + 1,
+               gears_resolve_dump_min_guest_frame_);
+      }
+    } else if (gears_draws_recorded_ >= gears_resolve_dump_min_draws_) {
       // Plus GEARS_ORACLE_DUMP_AFTER_GAMEPLAY frames. The FIRST gameplay frame
       // is not a useful one to compare: the level starts on a fade from black,
       // and this console run's own last two copies of it -- the post-chain
