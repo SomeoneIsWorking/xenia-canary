@@ -1319,14 +1319,19 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
     std::unique_lock lock(thread->handle_.state_mutex_);
     thread->handle_.state_ =
         create_suspended ? State::kSuspended : State::kRunning;
+    // Publish the suspended state and its count atomically. Resume() waits for
+    // state_ to leave kUninitialized and then reads suspend_count_ under this
+    // same mutex. Setting the count in a second critical section left a race:
+    // Resume could observe kSuspended with count 0 and return false, after
+    // which this thread set count 1 and waited forever. Gears exposed it as a
+    // bimodal launch where Main XThread was created but never executed and the
+    // GPU drained exactly 123 queued startup swaps.
+    thread->handle_.suspend_count_ = create_suspended ? 1 : 0;
     thread->handle_.state_signal_.notify_all();
-  }
-
-  if (create_suspended) {
-    std::unique_lock lock(thread->handle_.state_mutex_);
-    thread->handle_.suspend_count_ = 1;
-    thread->handle_.state_signal_.wait(
-        lock, [thread] { return thread->handle_.suspend_count_ == 0; });
+    if (create_suspended) {
+      thread->handle_.state_signal_.wait(
+          lock, [thread] { return thread->handle_.suspend_count_ == 0; });
+    }
   }
 
   start_routine();
