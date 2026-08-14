@@ -12,6 +12,7 @@
 
 #include <array>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -454,6 +455,23 @@ class VulkanTextureCache final : public TextureCache {
   uint32_t sampler_max_count_;
 
   xenos::AnisoFilter max_anisotropy_;
+
+  // Diagnostic readback of the ACTUAL output of the Vulkan texture-load
+  // compute shader, before the bytes are copied into the host image. Selected
+  // by guest base address so it cannot silently dump an unrelated texture.
+  struct GearsTextureUploadReadback {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
+    uint32_t row_pitch = 0;
+    uint32_t valid_row_bytes = 0;
+    uint32_t rows = 0;
+  };
+  uint32_t gears_texture_upload_base_ = 0;
+  std::string gears_texture_upload_out_;
+  uint64_t gears_texture_upload_scanned_ = 0;
+  bool gears_texture_upload_captured_ = false;
+  std::vector<GearsTextureUploadReadback> gears_texture_upload_readbacks_;
 
   std::unordered_map<SamplerParameters, Sampler, SamplerParameters::Hasher>
       samplers_;

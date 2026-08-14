@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdlib>
+#include <cstdio>
 #include <utility>
 
 #include "xenia/base/assert.h"
@@ -432,6 +434,54 @@ VulkanTextureCache::~VulkanTextureCache() {
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
+
+  if (gears_texture_upload_base_) {
+    if (!gears_texture_upload_captured_) {
+      XELOGW("gears: texture-upload probe matched 0 of {} texture load(s); "
+             "base {:08X} was NOT uploaded, not uploaded as empty",
+             gears_texture_upload_scanned_, gears_texture_upload_base_);
+    }
+    for (GearsTextureUploadReadback& readback :
+         gears_texture_upload_readbacks_) {
+      void* mapping = nullptr;
+      if (dfn.vkMapMemory(device, readback.memory, 0, readback.size, 0,
+                          &mapping) == VK_SUCCESS) {
+        const uint8_t* source = static_cast<const uint8_t*>(mapping);
+        std::vector<uint8_t> canonical;
+        canonical.reserve(size_t(readback.valid_row_bytes) * readback.rows);
+        for (uint32_t row = 0; row < readback.rows; ++row) {
+          canonical.insert(canonical.end(), source + size_t(row) *
+                                                readback.row_pitch,
+                           source + size_t(row) * readback.row_pitch +
+                               readback.valid_row_bytes);
+        }
+        uint64_t hash = UINT64_C(0xCBF29CE484222325);
+        for (uint8_t byte : canonical) {
+          hash ^= byte;
+          hash *= UINT64_C(0x100000001B3);
+        }
+        if (FILE* output = std::fopen(gears_texture_upload_out_.c_str(), "wb")) {
+          std::fwrite(canonical.data(), 1, canonical.size(), output);
+          std::fclose(output);
+          XELOGI("gears: texture-upload probe wrote {} canonical byte(s) "
+                 "from {} row(s), shader row pitch {}, hash {:016X}, to {}",
+                 canonical.size(), readback.rows, readback.row_pitch, hash,
+                 gears_texture_upload_out_);
+        } else {
+          XELOGE("gears: texture-upload probe could not open {}; {} produced "
+                 "byte(s) were NOT saved", gears_texture_upload_out_,
+                 canonical.size());
+        }
+        dfn.vkUnmapMemory(device, readback.memory);
+      } else {
+        XELOGE("gears: texture-upload probe could not map its {}-byte "
+               "readback; NO upload bytes were examined", readback.size);
+      }
+      dfn.vkDestroyBuffer(device, readback.buffer, nullptr);
+      dfn.vkFreeMemory(device, readback.memory, nullptr);
+    }
+    gears_texture_upload_readbacks_.clear();
+  }
 
   for (const std::pair<const SamplerParameters, Sampler>& sampler_pair :
        samplers_) {
@@ -1606,6 +1656,47 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
         texture_dst_access_mask, texture_old_layout, texture_new_layout);
   }
   command_processor_.SubmitBarriers(true);
+  // This diagnostic copy MUST be after the same compute->transfer barrier as
+  // the real buffer-to-image copy below. Recording it before SubmitBarriers
+  // reads stale scratch contents and produces a plausible but false mismatch.
+  if (gears_texture_upload_base_) {
+    ++gears_texture_upload_scanned_;
+    const uint32_t guest_base = texture_key.base_page << 12;
+    if (!gears_texture_upload_captured_ &&
+        guest_base == gears_texture_upload_base_) {
+      GearsTextureUploadReadback readback;
+      readback.size = host_buffer_size;
+      readback.row_pitch = host_layout_base.x_pitch_blocks *
+                           load_shader_info.bytes_per_host_block;
+      readback.valid_row_bytes =
+          (width + block_width - 1) / block_width *
+          load_shader_info.bytes_per_host_block;
+      readback.rows = (height + block_height - 1) / block_height;
+      if (ui::vulkan::util::CreateDedicatedAllocationBuffer(
+              vulkan_device, readback.size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+              ui::vulkan::util::MemoryPurpose::kReadback, readback.buffer,
+              readback.memory)) {
+        VkBufferCopy copy{0, 0, readback.size};
+        command_buffer.CmdVkCopyBuffer(scratch_buffer, readback.buffer, 1,
+                                      &copy);
+        command_processor_.PushBufferMemoryBarrier(
+            readback.buffer, 0, VK_WHOLE_SIZE,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+        command_processor_.SubmitBarriers(true);
+        gears_texture_upload_readbacks_.push_back(readback);
+        gears_texture_upload_captured_ = true;
+        XELOGI("gears: texture-upload probe captured base {:08X}: scratch {} "
+               "bytes, row pitch {}, canonical {}x{} bytes",
+               guest_base, readback.size, readback.row_pitch,
+               readback.valid_row_bytes, readback.rows);
+      } else {
+        XELOGE("gears: texture-upload probe matched base {:08X} but could not "
+               "allocate {} readback bytes; NOTHING was captured", guest_base,
+               readback.size);
+      }
+    }
+  }
   VkBufferImageCopy* copy_regions = command_buffer.CmdCopyBufferToImageEmplace(
       scratch_buffer, vulkan_texture.image(),
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, level_last - level_first + 1);
@@ -2051,7 +2142,22 @@ VulkanTextureCache::VulkanTextureCache(
     : TextureCache(register_file, shared_memory, draw_resolution_scale_x,
                    draw_resolution_scale_y),
       command_processor_(command_processor),
-      guest_shader_pipeline_stages_(guest_shader_pipeline_stages) {}
+      guest_shader_pipeline_stages_(guest_shader_pipeline_stages) {
+  const char* base = std::getenv("GEARS_ORACLE_TEX_UPLOAD_BASE");
+  const char* out = std::getenv("GEARS_ORACLE_TEX_UPLOAD_OUT");
+  if (base && *base) {
+    gears_texture_upload_base_ = uint32_t(std::strtoul(base, nullptr, 16));
+    if (!gears_texture_upload_base_ || !out || !*out) {
+      XELOGE("gears: GEARS_ORACLE_TEX_UPLOAD_BASE needs a non-zero hex base "
+             "and GEARS_ORACLE_TEX_UPLOAD_OUT; NOTHING will be read back");
+      gears_texture_upload_base_ = 0;
+    } else {
+      gears_texture_upload_out_ = out;
+      XELOGI("gears: actual texture upload at guest base {:08X} -> {}",
+             gears_texture_upload_base_, gears_texture_upload_out_);
+    }
+  }
+}
 
 bool VulkanTextureCache::Initialize() {
   const ui::vulkan::VulkanDevice* const vulkan_device =
