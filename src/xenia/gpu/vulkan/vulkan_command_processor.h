@@ -313,6 +313,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
   std::FILE* gears_vconst_all_ = nullptr;
   uint64_t gears_vconst_all_scanned_ = 0;
   uint64_t gears_vconst_all_matched_ = 0;
+  // Exact guest-memory fingerprints for every selected draw's index and
+  // vertex-fetch buffers. Paired with native GEARS_DRAW_VDUMP_VS.
+  uint64_t gears_vdump_hash_ = 0;
+  uint32_t gears_vdump_min_vertices_ = 0;
+  uint32_t gears_vdump_max_vertices_ = UINT32_MAX;
+  std::FILE* gears_vdump_ = nullptr;
+  uint64_t gears_vdump_scanned_ = 0;
+  uint64_t gears_vdump_matched_ = 0;
   // GEARS_ORACLE_VS_CONSTS_ORDINAL=<n>: the vertex float constants for ONE
   // NAMED DRAW of the dumped frame, keyed by the same submission ordinal
   // GEARS_ORACLE_DRAW_ORDER writes. The hash-keyed dump above fires on the
