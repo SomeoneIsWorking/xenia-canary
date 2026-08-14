@@ -306,6 +306,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint32_t gears_vs_binds_this_frame_ = 0;
   uint64_t gears_vconst_dump_hash_ = 0;
   bool gears_vconst_dumped_ = false;
+  // Every bind of one VS in every dumped frame, unlike the one-shot camera
+  // dump above. This lets a frame chosen only after a drift curve is scored
+  // retain the per-draw light matrices that produced it.
+  uint64_t gears_vconst_all_hash_ = 0;
+  std::FILE* gears_vconst_all_ = nullptr;
+  uint64_t gears_vconst_all_scanned_ = 0;
+  uint64_t gears_vconst_all_matched_ = 0;
   // GEARS_ORACLE_VS_CONSTS_ORDINAL=<n>: the vertex float constants for ONE
   // NAMED DRAW of the dumped frame, keyed by the same submission ordinal
   // GEARS_ORACLE_DRAW_ORDER writes. The hash-keyed dump above fires on the
