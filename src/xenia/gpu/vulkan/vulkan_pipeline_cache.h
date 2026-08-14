@@ -35,6 +35,7 @@
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/shader_storage.h"
 #include "xenia/gpu/spirv_shader_translator.h"
+#include "xenia/gpu/vulkan/gears_shader_override.h"
 #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
 #include "xenia/gpu/vulkan/vulkan_shader.h"
 #include "xenia/gpu/xenos.h"
@@ -397,6 +398,7 @@ class VulkanPipelineCache {
   const RegisterFile& register_file_;
   VulkanRenderTargetCache& render_target_cache_;
   VkShaderStageFlags guest_shader_vertex_stages_;
+  GearsShaderOverride gears_shader_override_;
 
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;

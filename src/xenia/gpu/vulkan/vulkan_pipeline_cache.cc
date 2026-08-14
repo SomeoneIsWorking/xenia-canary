@@ -79,6 +79,10 @@ bool VulkanPipelineCache::Initialize() {
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
 
+  if (!gears_shader_override_.Initialize(vulkan_device)) {
+    return false;
+  }
+
   bool edram_fragment_shader_interlock =
       render_target_cache_.GetPath() ==
       RenderTargetCache::Path::kPixelShaderInterlock;
@@ -285,6 +289,7 @@ void VulkanPipelineCache::Shutdown() {
   }
 
   // Destroy all internal shaders.
+  gears_shader_override_.Shutdown(vulkan_device);
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
                                          depth_only_fragment_shader_);
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
@@ -529,6 +534,18 @@ bool VulkanPipelineCache::ConfigurePipeline(
           normalized_depth_control, normalized_color_mask, render_pass_key,
           description)) {
     return false;
+  }
+  if (pixel_shader) {
+    const uint64_t pixel_hash =
+        GearsShaderOverride::HashUcode(pixel_shader->shader());
+    const uint64_t pixel_modification = pixel_shader->modification();
+    gears_shader_override_.Observe(pixel_hash, pixel_modification);
+    if (gears_shader_override_.Matches(pixel_hash, pixel_modification)) {
+      // Keep a diagnostic pipeline out of the title's normal in-memory and
+      // persisted pipeline identity. The creation arguments still retain the
+      // real shader hash and modification, so Select can install the module.
+      description.pixel_shader_hash ^= UINT64_C(0x8000000000000000);
+    }
   }
   if (last_pipeline_ && last_pipeline_->first == description) {
     *pipeline_out = &last_pipeline_->second;
@@ -2470,6 +2487,13 @@ VkShaderModule VulkanPipelineCache::GetTessellationVertexShader(
 bool VulkanPipelineCache::EnsurePipelineCreated(
     const PipelineCreationArguments& creation_arguments,
     VkShaderModule fragment_shader_override) {
+  if (fragment_shader_override == VK_NULL_HANDLE &&
+      creation_arguments.pixel_shader) {
+    fragment_shader_override = gears_shader_override_.Select(
+        GearsShaderOverride::HashUcode(
+            creation_arguments.pixel_shader->shader()),
+        creation_arguments.pixel_shader->modification());
+  }
   // Check if we already have a pipeline.
   // If it's a placeholder and we're not creating another placeholder,
   // we need to replace it with the real pipeline.
@@ -2478,7 +2502,8 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
           std::memory_order_acquire);
   bool is_placeholder = creation_arguments.pipeline->second.is_placeholder.load(
       std::memory_order_acquire);
-  bool creating_placeholder = fragment_shader_override != VK_NULL_HANDLE;
+  bool creating_placeholder =
+      fragment_shader_override == placeholder_pixel_shader_;
 
   if (existing_pipeline != VK_NULL_HANDLE) {
     if (!is_placeholder || creating_placeholder) {
