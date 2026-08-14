@@ -3440,6 +3440,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                    (unsigned long long)gears_vhash, index_count);
       const uint32_t* gears_sys =
           reinterpret_cast<const uint32_t*>(&system_constants_);
+      std::fprintf(gears_vdump_, "system bytes %zu hash %016llX\n",
+                   sizeof(system_constants_),
+                   (unsigned long long)gears_fnv(
+                       reinterpret_cast<const uint8_t*>(&system_constants_),
+                       sizeof(system_constants_)));
       std::fprintf(gears_vdump_, "system[0..11]");
       for (uint32_t gears_si = 0; gears_si < 12; ++gears_si) {
         std::fprintf(gears_vdump_, " %08X", gears_sys[gears_si]);
@@ -3451,6 +3456,62 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       std::fprintf(gears_vdump_,
                    "texture swizzles[0..3] %08X %08X %08X %08X\n",
                    gears_sys[24], gears_sys[25], gears_sys[26], gears_sys[27]);
+      draw_util::Scissor gears_scissor;
+      draw_util::GetScissor(regs, gears_scissor);
+      std::fprintf(
+          gears_vdump_,
+          "host raster viewport %u,%u %ux%u z %.9g..%.9g scissor %u,%u %ux%u"
+          " initiator %08X mode %08X\n",
+          viewport_info.xy_offset[0], viewport_info.xy_offset[1],
+          viewport_info.xy_extent[0], viewport_info.xy_extent[1],
+          viewport_info.z_min, viewport_info.z_max, gears_scissor.offset[0],
+          gears_scissor.offset[1], gears_scissor.extent[0],
+          gears_scissor.extent[1], regs[XE_GPU_REG_VGT_DRAW_INITIATOR],
+          regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL]);
+      std::vector<uint8_t> gears_vertex_constants;
+      const Shader::ConstantRegisterMap& gears_float_map =
+          vertex_shader->constant_register_map();
+      gears_vertex_constants.reserve(size_t(gears_float_map.float_count) * 16);
+      for (uint32_t gears_bm = 0; gears_bm < 4; ++gears_bm) {
+        uint64_t gears_bits = gears_float_map.float_bitmap[gears_bm];
+        uint32_t gears_ci;
+        while (xe::bit_scan_forward(gears_bits, &gears_ci)) {
+          gears_bits &= ~(uint64_t(1) << gears_ci);
+          const uint8_t* gears_constant = reinterpret_cast<const uint8_t*>(
+              &regs[XE_GPU_REG_SHADER_CONSTANT_000_X + (gears_bm << 8) +
+                    (gears_ci << 2)]);
+          gears_vertex_constants.insert(gears_vertex_constants.end(),
+                                        gears_constant, gears_constant + 16);
+        }
+      }
+      std::fprintf(gears_vdump_,
+                   "packed vertex constants bytes %zu hash %016llX\n",
+                   gears_vertex_constants.size(),
+                   (unsigned long long)gears_fnv(
+                       gears_vertex_constants.data(),
+                       gears_vertex_constants.size()));
+      const size_t gears_vertex_constant_count =
+          gears_vertex_constants.size() / 16;
+      for (size_t gears_first = 0; gears_first < gears_vertex_constant_count;
+           gears_first += 16) {
+        const size_t gears_end =
+            std::min(gears_first + 16, gears_vertex_constant_count);
+        std::fprintf(gears_vdump_, "packed vertex constants c%zu..c%zu",
+                     gears_first, gears_end - 1);
+        for (size_t gears_ci = gears_first; gears_ci < gears_end; ++gears_ci) {
+          const uint32_t* gears_words = reinterpret_cast<const uint32_t*>(
+              gears_vertex_constants.data() + gears_ci * 16);
+          std::fprintf(gears_vdump_, " c%zu=%08X,%08X,%08X,%08X", gears_ci,
+                       gears_words[0], gears_words[1], gears_words[2],
+                       gears_words[3]);
+        }
+        std::fprintf(gears_vdump_, "\n");
+      }
+      if (gears_vertex_constants.size() % 16) {
+        std::fprintf(gears_vdump_,
+                     "packed vertex constants INCOMPLETE: %zu trailing bytes\n",
+                     gears_vertex_constants.size() % 16);
+      }
       const std::vector<uint8_t>& gears_vs_spirv =
           vertex_shader_translation->translated_binary();
       const std::vector<uint8_t>& gears_ps_spirv =
