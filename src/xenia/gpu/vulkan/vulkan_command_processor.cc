@@ -167,6 +167,7 @@ bool VulkanCommandProcessor::SetupContext() {
   // path only ever compares an integer. See the dump site in UpdateBindings.
   if (const char* gears_fenv = std::getenv("GEARS_ORACLE_DUMP_AT_FRAME")) {
     gears_dump_at_frame_ = std::strtoull(gears_fenv, nullptr, 10);
+    gears_resolve_dump_window_.Select(gears_dump_at_frame_);
     XELOGI("gears: constant dumps wait for guest frame {}", gears_dump_at_frame_);
   }
   if (const char* gears_venv = std::getenv("GEARS_ORACLE_VS_CONSTS")) {
@@ -267,7 +268,6 @@ bool VulkanCommandProcessor::SetupContext() {
   // The frame AFTER, not the frame itself, because the draw count is only known
   // once the frame has ended -- and it is the identical rule on both sides, so
   // the two captures stay paired.
-  gears_resolve_dump_frame_ = gears_dump_at_frame_;
   if (const char* gears_mdenv = std::getenv("GEARS_ORACLE_DUMP_MIN_DRAWS")) {
     gears_resolve_dump_min_draws_ = std::strtoul(gears_mdenv, nullptr, 10);
     XELOGI("oracle: resolve dump waits for the first frame with >= {} draws",
@@ -288,10 +288,11 @@ bool VulkanCommandProcessor::SetupContext() {
   // lets the comparison PICK the console frame that is at the port's scene and
   // say which it picked, instead of assuming.
   if (const char* gears_nfenv = std::getenv("GEARS_ORACLE_DUMP_FRAMES")) {
-    gears_resolve_dump_frames_ =
+    const uint32_t frame_count =
         std::max(1u, uint32_t(std::strtoul(gears_nfenv, nullptr, 10)));
+    gears_resolve_dump_window_.SetFrameCount(frame_count);
     XELOGI("oracle: dumping {} consecutive frames of resolves",
-           gears_resolve_dump_frames_);
+           frame_count);
   }
   if (const char* gears_agenv = std::getenv("GEARS_ORACLE_DUMP_AFTER_GAMEPLAY")) {
     gears_resolve_dump_after_ = std::strtoul(gears_agenv, nullptr, 10);
@@ -299,11 +300,12 @@ bool VulkanCommandProcessor::SetupContext() {
            " gameplay frame", gears_resolve_dump_after_);
   }
   if (const char* gears_rfenv = std::getenv("GEARS_ORACLE_RESOLVE_DUMP_AT_FRAME")) {
-    gears_resolve_dump_frame_ = std::strtoull(gears_rfenv, nullptr, 10);
+    gears_resolve_dump_window_.Select(std::strtoull(gears_rfenv, nullptr, 10));
     XELOGI("oracle: resolve dump pinned to guest frame {}",
-           gears_resolve_dump_frame_);
+           gears_resolve_dump_window_.first_frame());
   }
-  if (!gears_resolve_dump_dir_.empty() && !gears_resolve_dump_frame_ &&
+  if (!gears_resolve_dump_dir_.empty() &&
+      !gears_resolve_dump_window_.selected() &&
       !gears_resolve_dump_min_draws_) {
     // A dump directory with no selector would dump EVERY resolve of every
     // frame, and each dump flushes the deferred command buffer and reads 512
@@ -2169,7 +2171,8 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // least N draws is the first gameplay frame, whatever index the load happens
   // to end on. Arms the NEXT frame, because the count is only known now that
   // this one has ended.
-  if (gears_resolve_dump_min_draws_ && !gears_resolve_dump_frame_) {
+  if (gears_resolve_dump_min_draws_ &&
+      !gears_resolve_dump_window_.selected()) {
     gears_resolve_dump_busiest_ =
         std::max(gears_resolve_dump_busiest_, gears_draws_recorded_);
     if (guest_swap_count() < gears_resolve_dump_min_guest_frame_) {
@@ -2185,12 +2188,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       // and this console run's own last two copies of it -- the post-chain
       // output and the front buffer -- are entirely zero. A frame compared
       // there says only that both sides were black.
-      gears_resolve_dump_frame_ =
-          guest_swap_count() + 1 + gears_resolve_dump_after_;
+      gears_resolve_dump_window_.Select(
+          guest_swap_count() + 1 + gears_resolve_dump_after_);
       XELOGE("oracle: frame {} recorded {} draws (>= {}), so it is gameplay;"
              " dumping every resolve of frame {}",
              guest_swap_count(), gears_draws_recorded_,
-             gears_resolve_dump_min_draws_, gears_resolve_dump_frame_);
+             gears_resolve_dump_min_draws_,
+             gears_resolve_dump_window_.first_frame());
     } else if ((guest_swap_count() % 600) == 0) {
       // The periodic NEGATIVE, with its denominator. A run that never reaches
       // the threshold must be distinguishable from one whose selector never
@@ -6700,7 +6704,8 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
       // loading screen. Falls back to the old rule when no window is set, so
       // every existing use of this knob behaves as before.
       const bool gears_vconst_when =
-          (gears_resolve_dump_min_draws_ || gears_resolve_dump_frame_)
+          (gears_resolve_dump_min_draws_ ||
+           gears_resolve_dump_window_.selected())
               ? GearsDumpingThisFrame()
               : guest_swap_count() >= gears_dump_at_frame_;
       if (gears_vconst_dump_hash_ && vertex_shader && !gears_vconst_dumped_ &&

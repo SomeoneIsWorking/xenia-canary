@@ -30,6 +30,7 @@
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/spirv_shader_translator.h"
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
+#include "xenia/gpu/vulkan/gears_resolve_dump_window.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
 #include "xenia/gpu/vulkan/vulkan_pipeline_cache.h"
 #include "xenia/gpu/vulkan/vulkan_primitive_processor.h"
@@ -361,11 +362,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // layer by layer instead of only at the presented frame. Empty = off.
   std::string gears_resolve_dump_dir_;
   uint32_t gears_resolve_dump_copy_ = 0;
-  // WHICH guest frame the dump covers. Zero means "not selected yet", which is
-  // also "dump nothing" -- an unselected dump would run at ~0.8 fps forever.
-  // Set by GEARS_ORACLE_DUMP_MIN_DRAWS (content: the frame after the first with
-  // that many draws, the same rule our runtime applies) or pinned by index.
-  uint64_t gears_resolve_dump_frame_ = 0;
+  // WHICH guest frames the dump covers. Selection is distinct from the frame
+  // number because synthesized one-frame traces use the valid index zero.
+  GearsResolveDumpWindow gears_resolve_dump_window_;
   uint32_t gears_resolve_dump_min_draws_ = 0;
   // Do not let an early high-draw UI frame arm the content selector while a
   // scripted walk is still in progress. Zero leaves the constraint disabled.
@@ -375,19 +374,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // frames; the runtime's GEARS_DRAW_FRAME_AFTER_GAMEPLAY is the same offset.
   uint32_t gears_resolve_dump_after_ = 0;
   uint32_t gears_resolve_dump_busiest_ = 0;
-  // How many CONSECUTIVE frames the dump covers, starting at
-  // gears_resolve_dump_frame_ (GEARS_ORACLE_DUMP_FRAMES, default 1). The two
-  // emulators advance the guest by wall-clock delta time, so equal frame
-  // INDICES are not equal game time; a window lets the comparison choose.
-  uint32_t gears_resolve_dump_frames_ = 1;
   // Whether THIS guest frame is inside that window. One predicate, used by
   // both dump sites -- they were separate copies of the same condition and
   // would have drifted the moment the window was added.
   bool GearsDumpingThisFrame() const {
-    return !gears_resolve_dump_dir_.empty() && gears_resolve_dump_frame_ != 0 &&
-           guest_swap_count() >= gears_resolve_dump_frame_ &&
-           guest_swap_count() <
-               gears_resolve_dump_frame_ + gears_resolve_dump_frames_;
+    return !gears_resolve_dump_dir_.empty() &&
+           gears_resolve_dump_window_.Contains(guest_swap_count());
   }
   // The LAST DRAW BEFORE EACH COPY, printed at IssueCopy. Pairing draws across
   // the two emulators by index or by shader hash does not work -- they count
