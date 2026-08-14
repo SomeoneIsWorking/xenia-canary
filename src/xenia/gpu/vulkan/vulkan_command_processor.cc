@@ -174,6 +174,22 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGI("gears: will dump vertex shader {:016X} float constants once",
            gears_vconst_dump_hash_);
   }
+  if (const char* gears_vaenv = std::getenv("GEARS_ORACLE_VS_CONSTS_ALL");
+      gears_vaenv && *gears_vaenv) {
+    gears_vconst_all_hash_ = std::strtoull(gears_vaenv, nullptr, 16);
+    const char* gears_vaout = std::getenv("GEARS_ORACLE_VS_CONSTS_ALL_OUT");
+    if (!gears_vaout || !*gears_vaout) {
+      XELOGE("gears: GEARS_ORACLE_VS_CONSTS_ALL needs "
+             "GEARS_ORACLE_VS_CONSTS_ALL_OUT; NOTHING will be dumped");
+      gears_vconst_all_hash_ = 0;
+    } else {
+      gears_vconst_all_ = std::fopen(gears_vaout, "wb");
+      XELOGI("gears: all dumped-frame binds of vertex shader {:016X} -> {} ({})",
+             gears_vconst_all_hash_, gears_vaout,
+             gears_vconst_all_ ? "open" : "FAILED TO OPEN, nothing will be written");
+      if (!gears_vconst_all_) gears_vconst_all_hash_ = 0;
+    }
+  }
   if (const char* gears_psenv = std::getenv("GEARS_ORACLE_PRIM_STATS")) {
     gears_prim_stats_hash_ = std::strtoull(gears_psenv, nullptr, 16);
     XELOGI(
@@ -1316,6 +1332,21 @@ bool VulkanCommandProcessor::SetupContext() {
 
 void VulkanCommandProcessor::ShutdownContext() {
   AwaitAllQueueOperationsCompletion();
+
+  if (gears_vconst_all_) {
+    if (gears_vconst_all_matched_) {
+      XELOGI("gears: GEARS_ORACLE_VS_CONSTS_ALL matched {} of {} dumped-frame "
+             "vertex-shader bind(s); every match was written",
+             gears_vconst_all_matched_, gears_vconst_all_scanned_);
+    } else {
+      XELOGW("gears: GEARS_ORACLE_VS_CONSTS_ALL matched 0 of {} dumped-frame "
+             "vertex-shader bind(s); the requested shader did not bind in the "
+             "observed window, NOT that its constants were empty",
+             gears_vconst_all_scanned_);
+    }
+    std::fclose(gears_vconst_all_);
+    gears_vconst_all_ = nullptr;
+  }
 
   ShutdownZPDQueryResources();
   zpd_host_query_pool_.reset();
@@ -6467,6 +6498,49 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
       }
       current_constant_buffers_up_to_date_ |=
           UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatVertex;
+    }
+    // Unlike the one-shot and ordinal diagnostics above, retain EVERY bind of
+    // one shader in the whole dump window. The best drift-matched frame is not
+    // known until after the run, and re-running to capture one ordinal changes
+    // the game moment. Read the guest registers directly so this still fires
+    // when Xenia reuses an already-up-to-date packed constant buffer.
+    if (gears_vconst_all_ && gears_vconst_all_hash_ &&
+        GearsDumpingThisFrame() && vertex_shader) {
+      ++gears_vconst_all_scanned_;
+      uint64_t gears_ahash = 0xCBF29CE484222325ull;
+      for (uint32_t gd : vertex_shader->ucode_data()) {
+        const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
+                               uint8_t(gd >> 8), uint8_t(gd)};
+        for (int gi = 0; gi < 4; ++gi) {
+          gears_ahash ^= gb[gi];
+          gears_ahash *= 0x100000001B3ull;
+        }
+      }
+      if (gears_ahash == gears_vconst_all_hash_) {
+        ++gears_vconst_all_matched_;
+        std::fprintf(gears_vconst_all_,
+                     "frame %llu draw %u global %u vs %016llX\n",
+                     (unsigned long long)guest_swap_count(),
+                     gears_draws_recorded_, gears_draw_order_index_,
+                     (unsigned long long)gears_ahash);
+        uint32_t gears_count = 0;
+        for (uint32_t gi = 0; gi < 4; ++gi) {
+          uint64_t gmap = current_float_constant_map_vertex_[gi];
+          uint32_t gidx;
+          while (xe::bit_scan_forward(gmap, &gidx)) {
+            gmap &= ~(1ull << gidx);
+            const uint32_t gc = (gi << 6) + gidx;
+            const uint32_t* gv = &regs[XE_GPU_REG_SHADER_CONSTANT_000_X +
+                                       (gc << 2)];
+            std::fprintf(gears_vconst_all_,
+                         "c[%u]=[%08x %08x %08x %08x]\n", gc,
+                         gv[0], gv[1], gv[2], gv[3]);
+            ++gears_count;
+          }
+        }
+        std::fprintf(gears_vconst_all_, "end %u\n", gears_count);
+        std::fflush(gears_vconst_all_);
+      }
     }
     // Pixel shader float constants.
     if (!(current_constant_buffers_up_to_date_ &
