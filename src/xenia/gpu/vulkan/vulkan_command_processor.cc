@@ -190,6 +190,34 @@ bool VulkanCommandProcessor::SetupContext() {
       if (!gears_vconst_all_) gears_vconst_all_hash_ = 0;
     }
   }
+  if (const char* gears_venv = std::getenv("GEARS_ORACLE_VDUMP_VS");
+      gears_venv && *gears_venv) {
+    char* gears_vend = nullptr;
+    gears_vdump_hash_ = std::strtoull(gears_venv, &gears_vend, 16);
+    if (gears_vend && *gears_vend == ':') {
+      char* gears_vrange_end = nullptr;
+      gears_vdump_min_vertices_ = uint32_t(
+          std::strtoul(gears_vend + 1, &gears_vrange_end, 10));
+      gears_vdump_max_vertices_ = gears_vdump_min_vertices_;
+      if (gears_vrange_end && *gears_vrange_end == '-') {
+        gears_vdump_max_vertices_ = uint32_t(
+            std::strtoul(gears_vrange_end + 1, nullptr, 10));
+      }
+    }
+    const char* gears_vout = std::getenv("GEARS_ORACLE_VDUMP_VS_OUT");
+    if (!gears_vdump_hash_ || !gears_vout || !*gears_vout) {
+      XELOGE("gears: GEARS_ORACLE_VDUMP_VS needs a non-zero hash and "
+             "GEARS_ORACLE_VDUMP_VS_OUT; NOTHING will be fingerprinted");
+      gears_vdump_hash_ = 0;
+    } else {
+      gears_vdump_ = std::fopen(gears_vout, "wb");
+      XELOGI("gears: geometry fingerprints for VS {:016X}, vertices {}..{} "
+             "-> {} ({})", gears_vdump_hash_, gears_vdump_min_vertices_,
+             gears_vdump_max_vertices_, gears_vout,
+             gears_vdump_ ? "open" : "FAILED TO OPEN, nothing will be written");
+      if (!gears_vdump_) gears_vdump_hash_ = 0;
+    }
+  }
   if (const char* gears_psenv = std::getenv("GEARS_ORACLE_PRIM_STATS")) {
     gears_prim_stats_hash_ = std::strtoull(gears_psenv, nullptr, 16);
     XELOGI(
@@ -1346,6 +1374,19 @@ void VulkanCommandProcessor::ShutdownContext() {
     }
     std::fclose(gears_vconst_all_);
     gears_vconst_all_ = nullptr;
+  }
+  if (gears_vdump_) {
+    if (gears_vdump_matched_) {
+      XELOGI("gears: GEARS_ORACLE_VDUMP_VS matched {} of {} dumped-frame "
+             "draw(s); every match was fingerprinted", gears_vdump_matched_,
+             gears_vdump_scanned_);
+    } else {
+      XELOGW("gears: GEARS_ORACLE_VDUMP_VS matched 0 of {} dumped-frame "
+             "draw(s); the requested shader/count did not occur, NOT that its "
+             "geometry was empty", gears_vdump_scanned_);
+    }
+    std::fclose(gears_vdump_);
+    gears_vdump_ = nullptr;
   }
 
   ShutdownZPDQueryResources();
@@ -3361,6 +3402,196 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   if (!UpdateBindings(vertex_shader, pixel_shader)) {
     XELOGE("IssueDraw: UpdateBindings failed");
     return false;
+  }
+
+  // Exact GEOMETRY INPUT fingerprints for the oracle/native join. Pipeline
+  // statistics only count aggregate work: chapter 45 has equal fragment
+  // invocation counts while the native atlas stores less than half as many
+  // unique pixels. Hash the guest bytes the draw actually indexes and fetches,
+  // before host endian conversion, so equality means both translated shaders
+  // received byte-identical geometry rather than merely the same vertex count.
+  if (gears_vdump_ && gears_vdump_hash_ && GearsDumpingThisFrame()) {
+    ++gears_vdump_scanned_;
+    auto gears_fnv = [](const uint8_t* bytes, size_t size) {
+      uint64_t h = 0xCBF29CE484222325ull;
+      for (size_t i = 0; i < size; ++i) {
+        h ^= bytes[i];
+        h *= 0x100000001B3ull;
+      }
+      return h;
+    };
+    uint64_t gears_vhash = 0xCBF29CE484222325ull;
+    for (uint32_t gd : vertex_shader->ucode_data()) {
+      const uint8_t gb[4] = {uint8_t(gd >> 24), uint8_t(gd >> 16),
+                             uint8_t(gd >> 8), uint8_t(gd)};
+      for (uint32_t gi = 0; gi < 4; ++gi) {
+        gears_vhash ^= gb[gi];
+        gears_vhash *= 0x100000001B3ull;
+      }
+    }
+    if (gears_vhash == gears_vdump_hash_ &&
+        index_count >= gears_vdump_min_vertices_ &&
+        index_count <= gears_vdump_max_vertices_) {
+      ++gears_vdump_matched_;
+      std::fprintf(gears_vdump_,
+                   "frame %llu draw %u global %u vs %016llX vertices %u\n",
+                   (unsigned long long)guest_swap_count(),
+                   gears_draws_recorded_, gears_draw_order_index_,
+                   (unsigned long long)gears_vhash, index_count);
+      const uint32_t* gears_sys =
+          reinterpret_cast<const uint32_t*>(&system_constants_);
+      std::fprintf(gears_vdump_, "system[0..11]");
+      for (uint32_t gears_si = 0; gears_si < 12; ++gears_si) {
+        std::fprintf(gears_vdump_, " %08X", gears_sys[gears_si]);
+      }
+      std::fprintf(gears_vdump_, "\n");
+      std::fprintf(gears_vdump_,
+                   "texture signs[0..3] %08X %08X %08X %08X\n",
+                   gears_sys[16], gears_sys[17], gears_sys[18], gears_sys[19]);
+      std::fprintf(gears_vdump_,
+                   "texture swizzles[0..3] %08X %08X %08X %08X\n",
+                   gears_sys[24], gears_sys[25], gears_sys[26], gears_sys[27]);
+      const std::vector<uint8_t>& gears_vs_spirv =
+          vertex_shader_translation->translated_binary();
+      const std::vector<uint8_t>& gears_ps_spirv =
+          pixel_shader_translation->translated_binary();
+      std::fprintf(gears_vdump_,
+                   "translated VS bytes %zu hash %016llX; PS bytes %zu hash "
+                   "%016llX\n", gears_vs_spirv.size(),
+                   (unsigned long long)gears_fnv(gears_vs_spirv.data(),
+                                                 gears_vs_spirv.size()),
+                   gears_ps_spirv.size(),
+                   (unsigned long long)gears_fnv(gears_ps_spirv.data(),
+                                                 gears_ps_spirv.size()));
+      for (uint32_t gears_pc : {0u, 1u, 255u}) {
+        const uint32_t* gears_cv =
+            &regs[XE_GPU_REG_SHADER_CONSTANT_256_X + gears_pc * 4];
+        std::fprintf(gears_vdump_,
+                     "pixel c%u %08X %08X %08X %08X\n", gears_pc,
+                     gears_cv[0], gears_cv[1], gears_cv[2], gears_cv[3]);
+      }
+      if (pixel_shader) {
+        for (const Shader::TextureBinding& gears_tb :
+             pixel_shader->texture_bindings()) {
+          const uint32_t gears_fc = gears_tb.fetch_constant & 31;
+          const xenos::xe_gpu_texture_fetch_t gears_tf =
+              regs.GetTextureFetch(gears_fc);
+          const uint32_t* gears_fw = reinterpret_cast<const uint32_t*>(&gears_tf);
+          std::fprintf(gears_vdump_,
+                       "pixel fetch fc %u %08X %08X %08X %08X %08X %08X",
+                       gears_fc, gears_fw[0], gears_fw[1], gears_fw[2],
+                       gears_fw[3], gears_fw[4], gears_fw[5]);
+          uint32_t gears_w1 = 0, gears_h1 = 0, gears_d1 = 0;
+          uint32_t gears_base_page = 0, gears_mip_page = 0;
+          uint32_t gears_mip_min = 0, gears_mip_max = 0;
+          texture_util::GetSubresourcesFromFetchConstant(
+              gears_tf, &gears_w1, &gears_h1, &gears_d1, &gears_base_page,
+              &gears_mip_page, &gears_mip_min, &gears_mip_max);
+          const xenos::TextureFormat gears_base_format =
+              GetBaseFormat(gears_tf.format);
+          const texture_util::TextureGuestLayout gears_layout =
+              texture_util::GetGuestTextureLayout(
+                  gears_tf.dimension, gears_tf.pitch, gears_w1 + 1,
+                  gears_tf.dimension == xenos::DataDimension::k1D
+                      ? 1u : gears_h1 + 1,
+                  gears_d1 + 1, gears_tf.tiled != 0, gears_base_format,
+                  gears_tf.packed_mips != 0, true, 0);
+          const uint32_t gears_tbase = gears_base_page << 12;
+          const uint32_t gears_tbytes =
+              gears_layout.base.level_data_extent_bytes;
+          if (gears_base_page && gears_tbytes &&
+              uint64_t(gears_tbase) + gears_tbytes <=
+                  SharedMemory::kBufferSize) {
+            const uint8_t* gears_tp = static_cast<const uint8_t*>(
+                memory_->TranslatePhysical(gears_tbase));
+            std::fprintf(gears_vdump_, " base %08X bytes %u rawhash %016llX",
+                         gears_tbase, gears_tbytes,
+                         (unsigned long long)gears_fnv(gears_tp,
+                                                      gears_tbytes));
+          } else {
+            std::fprintf(gears_vdump_,
+                         " NO raw texture hash (absent or outside memory)");
+          }
+          std::fprintf(gears_vdump_, "\n");
+        }
+        const std::vector<VulkanShader::SamplerBinding>& gears_samplers =
+            pixel_shader->GetSamplerBindingsAfterTranslation();
+        for (size_t gears_si = 0; gears_si < gears_samplers.size(); ++gears_si) {
+          const VulkanTextureCache::SamplerParameters gears_sp =
+              texture_cache_->GetSamplerParameters(gears_samplers[gears_si]);
+          std::fprintf(gears_vdump_,
+                       "pixel sampler fc %u value %08X filters %u/%u/%u clamp "
+                       "%u/%u/%u aniso %u mip_min %u base %u border %u\n",
+                       gears_samplers[gears_si].fetch_constant, gears_sp.value,
+                       gears_sp.mag_linear, gears_sp.min_linear,
+                       gears_sp.mip_linear, uint32_t(gears_sp.clamp_x),
+                       uint32_t(gears_sp.clamp_y), uint32_t(gears_sp.clamp_z),
+                       uint32_t(gears_sp.aniso_filter), gears_sp.mip_min_level,
+                       gears_sp.mip_base_map, uint32_t(gears_sp.border_color));
+        }
+      }
+      if (index_buffer_info) {
+        const uint64_t gears_ibytes = uint64_t(index_count) *
+            (index_buffer_info->format == xenos::IndexFormat::kInt32 ? 4u : 2u);
+        if (uint64_t(index_buffer_info->guest_base) + gears_ibytes <=
+            SharedMemory::kBufferSize) {
+          const uint8_t* gears_ip = static_cast<const uint8_t*>(
+              memory_->TranslatePhysical(index_buffer_info->guest_base));
+          std::fprintf(gears_vdump_,
+                       "index base %08X bytes %llu format %u endian %u hash "
+                       "%016llX\n", index_buffer_info->guest_base,
+                       (unsigned long long)gears_ibytes,
+                       uint32_t(index_buffer_info->format),
+                       uint32_t(index_buffer_info->endianness),
+                       (unsigned long long)gears_fnv(gears_ip,
+                                                    size_t(gears_ibytes)));
+        } else {
+          std::fprintf(gears_vdump_,
+                       "index REFUSED base %08X bytes %llu exceeds %u\n",
+                       index_buffer_info->guest_base,
+                       (unsigned long long)gears_ibytes,
+                       SharedMemory::kBufferSize);
+        }
+      } else {
+        std::fprintf(gears_vdump_, "index auto-sequential count %u\n",
+                     index_count);
+      }
+      const Shader::ConstantRegisterMap& gears_cmap =
+          vertex_shader->constant_register_map();
+      uint32_t gears_fetches = 0;
+      for (uint32_t gi = 0;
+           gi < xe::countof(gears_cmap.vertex_fetch_bitmap); ++gi) {
+        uint32_t gears_bits = gears_cmap.vertex_fetch_bitmap[gi];
+        uint32_t gears_bit;
+        while (xe::bit_scan_forward(gears_bits, &gears_bit)) {
+          gears_bits = xe::clear_lowest_bit(gears_bits);
+          const uint32_t gears_fc = gi * 32 + gears_bit;
+          const xenos::xe_gpu_vertex_fetch_t gears_vf =
+              regs.GetVertexFetch(gears_fc);
+          const uint32_t gears_base = gears_vf.address << 2;
+          const uint64_t gears_bytes = uint64_t(gears_vf.size) << 2;
+          if (uint64_t(gears_base) + gears_bytes <= SharedMemory::kBufferSize) {
+            const uint8_t* gears_vp = static_cast<const uint8_t*>(
+                memory_->TranslatePhysical(gears_base));
+            std::fprintf(gears_vdump_,
+                         "fetch fc %u base %08X bytes %llu hash %016llX\n",
+                         gears_fc, gears_base,
+                         (unsigned long long)gears_bytes,
+                         (unsigned long long)gears_fnv(gears_vp,
+                                                      size_t(gears_bytes)));
+          } else {
+            std::fprintf(gears_vdump_,
+                         "fetch fc %u REFUSED base %08X bytes %llu exceeds %u\n",
+                         gears_fc, gears_base,
+                         (unsigned long long)gears_bytes,
+                         SharedMemory::kBufferSize);
+          }
+          ++gears_fetches;
+        }
+      }
+      std::fprintf(gears_vdump_, "end fetches %u\n", gears_fetches);
+      std::fflush(gears_vdump_);
+    }
   }
 
   // Ensure vertex buffers are resident.
