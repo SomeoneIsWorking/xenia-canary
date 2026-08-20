@@ -12,8 +12,8 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 #include "xenia/base/assert.h"
@@ -437,9 +437,10 @@ VulkanTextureCache::~VulkanTextureCache() {
 
   if (gears_texture_upload_base_) {
     if (!gears_texture_upload_captured_) {
-      XELOGW("gears: texture-upload probe matched 0 of {} texture load(s); "
-             "base {:08X} was NOT uploaded, not uploaded as empty",
-             gears_texture_upload_scanned_, gears_texture_upload_base_);
+      XELOGW(
+          "gears: texture-upload probe matched 0 of {} texture load(s); "
+          "base {:08X} was NOT uploaded, not uploaded as empty",
+          gears_texture_upload_scanned_, gears_texture_upload_base_);
     }
     for (GearsTextureUploadReadback& readback :
          gears_texture_upload_readbacks_) {
@@ -448,34 +449,59 @@ VulkanTextureCache::~VulkanTextureCache() {
                           &mapping) == VK_SUCCESS) {
         const uint8_t* source = static_cast<const uint8_t*>(mapping);
         std::vector<uint8_t> canonical;
-        canonical.reserve(size_t(readback.valid_row_bytes) * readback.rows);
-        for (uint32_t row = 0; row < readback.rows; ++row) {
-          canonical.insert(canonical.end(), source + size_t(row) *
-                                                readback.row_pitch,
-                           source + size_t(row) * readback.row_pitch +
-                               readback.valid_row_bytes);
+        for (const GearsTextureUploadLevel& level : readback.levels) {
+          const size_t level_begin = canonical.size();
+          for (uint32_t layer = 0; layer < level.layers; ++layer) {
+            const VkDeviceSize layer_offset =
+                level.offset + level.layer_pitch * layer;
+            for (uint32_t z = 0; z < level.depth; ++z) {
+              for (uint32_t row = 0; row < level.rows; ++row) {
+                const VkDeviceSize row_offset =
+                    layer_offset + level.depth_pitch * z +
+                    VkDeviceSize(row) * level.row_pitch;
+                canonical.insert(canonical.end(), source + row_offset,
+                                 source + row_offset + level.valid_row_bytes);
+              }
+            }
+          }
+          uint64_t level_hash = UINT64_C(0xCBF29CE484222325);
+          for (size_t i = level_begin; i < canonical.size(); ++i) {
+            level_hash ^= canonical[i];
+            level_hash *= UINT64_C(0x100000001B3);
+          }
+          XELOGI(
+              "gears: texture-upload probe level {}: {} canonical "
+              "byte(s), {} layer(s), depth {}, {} row(s), row pitch {}, "
+              "hash {:016X}",
+              level.level, canonical.size() - level_begin, level.layers,
+              level.depth, level.rows, level.row_pitch, level_hash);
         }
         uint64_t hash = UINT64_C(0xCBF29CE484222325);
         for (uint8_t byte : canonical) {
           hash ^= byte;
           hash *= UINT64_C(0x100000001B3);
         }
-        if (FILE* output = std::fopen(gears_texture_upload_out_.c_str(), "wb")) {
+        if (FILE* output =
+                std::fopen(gears_texture_upload_out_.c_str(), "wb")) {
           std::fwrite(canonical.data(), 1, canonical.size(), output);
           std::fclose(output);
-          XELOGI("gears: texture-upload probe wrote {} canonical byte(s) "
-                 "from {} row(s), shader row pitch {}, hash {:016X}, to {}",
-                 canonical.size(), readback.rows, readback.row_pitch, hash,
-                 gears_texture_upload_out_);
+          XELOGI(
+              "gears: texture-upload probe wrote {} canonical byte(s) "
+              "from {} level(s), hash {:016X}, to {}",
+              canonical.size(), readback.levels.size(), hash,
+              gears_texture_upload_out_);
         } else {
-          XELOGE("gears: texture-upload probe could not open {}; {} produced "
-                 "byte(s) were NOT saved", gears_texture_upload_out_,
-                 canonical.size());
+          XELOGE(
+              "gears: texture-upload probe could not open {}; {} produced "
+              "byte(s) were NOT saved",
+              gears_texture_upload_out_, canonical.size());
         }
         dfn.vkUnmapMemory(device, readback.memory);
       } else {
-        XELOGE("gears: texture-upload probe could not map its {}-byte "
-               "readback; NO upload bytes were examined", readback.size);
+        XELOGE(
+            "gears: texture-upload probe could not map its {}-byte "
+            "readback; NO upload bytes were examined",
+            readback.size);
       }
       dfn.vkDestroyBuffer(device, readback.buffer, nullptr);
       dfn.vkFreeMemory(device, readback.memory, nullptr);
@@ -1666,34 +1692,71 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
         guest_base == gears_texture_upload_base_) {
       GearsTextureUploadReadback readback;
       readback.size = host_buffer_size;
-      readback.row_pitch = host_layout_base.x_pitch_blocks *
-                           load_shader_info.bytes_per_host_block;
-      readback.valid_row_bytes =
-          (width + block_width - 1) / block_width *
-          load_shader_info.bytes_per_host_block;
-      readback.rows = (height + block_height - 1) / block_height;
+      readback.levels.reserve(level_last - level_first + 1);
+      for (uint32_t level = level_first; level <= level_last; ++level) {
+        const HostLayout& level_host_layout =
+            level != 0 ? host_layout_mips[std::min(level, level_packed)]
+                       : host_layout_base;
+        GearsTextureUploadLevel probe_level;
+        probe_level.offset = level_host_layout.offset_bytes;
+        if (level >= level_packed) {
+          uint32_t packed_x, packed_y, packed_z;
+          texture_util::GetPackedMipOffset(width, height, depth, guest_format,
+                                           level, packed_x, packed_y, packed_z);
+          uint32_t host_x = texture_resolution_scale_x * packed_x;
+          uint32_t host_y = texture_resolution_scale_y * packed_y;
+          if (!host_format.block_compressed) {
+            host_x *= block_width;
+            host_y *= block_height;
+          }
+          probe_level.offset +=
+              load_shader_info.bytes_per_host_block *
+              (host_x + level_host_layout.x_pitch_blocks *
+                            (host_y + level_host_layout.y_pitch_blocks *
+                                          VkDeviceSize(packed_z)));
+        }
+        probe_level.layer_pitch = level_host_layout.slice_size_bytes;
+        probe_level.row_pitch = level_host_layout.x_pitch_blocks *
+                                load_shader_info.bytes_per_host_block;
+        probe_level.depth_pitch = VkDeviceSize(probe_level.row_pitch) *
+                                  level_host_layout.y_pitch_blocks;
+        const uint32_t level_width = std::max(
+            (width * texture_resolution_scale_x) >> level, UINT32_C(1));
+        const uint32_t level_height = std::max(
+            (height * texture_resolution_scale_y) >> level, UINT32_C(1));
+        probe_level.valid_row_bytes = (level_width + host_block_width - 1) /
+                                      host_block_width *
+                                      load_shader_info.bytes_per_host_block;
+        probe_level.rows =
+            (level_height + host_block_height - 1) / host_block_height;
+        probe_level.depth = std::max(depth >> level, UINT32_C(1));
+        probe_level.layers = array_size;
+        probe_level.level = level;
+        readback.levels.push_back(probe_level);
+      }
       if (ui::vulkan::util::CreateDedicatedAllocationBuffer(
               vulkan_device, readback.size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
               ui::vulkan::util::MemoryPurpose::kReadback, readback.buffer,
               readback.memory)) {
         VkBufferCopy copy{0, 0, readback.size};
         command_buffer.CmdVkCopyBuffer(scratch_buffer, readback.buffer, 1,
-                                      &copy);
+                                       &copy);
         command_processor_.PushBufferMemoryBarrier(
-            readback.buffer, 0, VK_WHOLE_SIZE,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+            readback.buffer, 0, VK_WHOLE_SIZE, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_HOST_READ_BIT);
         command_processor_.SubmitBarriers(true);
         gears_texture_upload_readbacks_.push_back(readback);
         gears_texture_upload_captured_ = true;
-        XELOGI("gears: texture-upload probe captured base {:08X}: scratch {} "
-               "bytes, row pitch {}, canonical {}x{} bytes",
-               guest_base, readback.size, readback.row_pitch,
-               readback.valid_row_bytes, readback.rows);
+        XELOGI(
+            "gears: texture-upload probe captured base {:08X}: scratch {} "
+            "bytes, {} level(s)",
+            guest_base, readback.size, readback.levels.size());
       } else {
-        XELOGE("gears: texture-upload probe matched base {:08X} but could not "
-               "allocate {} readback bytes; NOTHING was captured", guest_base,
-               readback.size);
+        XELOGE(
+            "gears: texture-upload probe matched base {:08X} but could not "
+            "allocate {} readback bytes; NOTHING was captured",
+            guest_base, readback.size);
       }
     }
   }
@@ -2148,8 +2211,9 @@ VulkanTextureCache::VulkanTextureCache(
   if (base && *base) {
     gears_texture_upload_base_ = uint32_t(std::strtoul(base, nullptr, 16));
     if (!gears_texture_upload_base_ || !out || !*out) {
-      XELOGE("gears: GEARS_ORACLE_TEX_UPLOAD_BASE needs a non-zero hex base "
-             "and GEARS_ORACLE_TEX_UPLOAD_OUT; NOTHING will be read back");
+      XELOGE(
+          "gears: GEARS_ORACLE_TEX_UPLOAD_BASE needs a non-zero hex base "
+          "and GEARS_ORACLE_TEX_UPLOAD_OUT; NOTHING will be read back");
       gears_texture_upload_base_ = 0;
     } else {
       gears_texture_upload_out_ = out;
