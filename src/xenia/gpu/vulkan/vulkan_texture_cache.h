@@ -459,13 +459,22 @@ class VulkanTextureCache final : public TextureCache {
   // Diagnostic readback of the ACTUAL output of the Vulkan texture-load
   // compute shader, before the bytes are copied into the host image. Selected
   // by guest base address so it cannot silently dump an unrelated texture.
+  struct GearsTextureUploadLevel {
+    VkDeviceSize offset = 0;
+    VkDeviceSize layer_pitch = 0;
+    VkDeviceSize depth_pitch = 0;
+    uint32_t row_pitch = 0;
+    uint32_t valid_row_bytes = 0;
+    uint32_t rows = 0;
+    uint32_t depth = 0;
+    uint32_t layers = 0;
+    uint32_t level = 0;
+  };
   struct GearsTextureUploadReadback {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
-    uint32_t row_pitch = 0;
-    uint32_t valid_row_bytes = 0;
-    uint32_t rows = 0;
+    std::vector<GearsTextureUploadLevel> levels;
   };
   uint32_t gears_texture_upload_base_ = 0;
   std::string gears_texture_upload_out_;
