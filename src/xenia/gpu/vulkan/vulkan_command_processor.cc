@@ -4086,11 +4086,11 @@ bool VulkanCommandProcessor::IssueCopy() {
     return false;
   }
 
-  uint32_t written_address, written_length;
+  uint32_t written_address, written_length, copy_dest_base;
   reg::RB_COPY_DEST_INFO copy_dest_info;
   if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
                                      written_address, written_length,
-                                     &copy_dest_info)) {
+                                     &copy_dest_info, &copy_dest_base)) {
     XELOGE("IssueCopy: render target cache refused the resolve");
     return false;
   }
@@ -4172,12 +4172,13 @@ bool VulkanCommandProcessor::IssueCopy() {
         // console's own log of this field retracted it (catalog #96). A
         // comparison that has to assume this is a comparison that will
         // eventually assume wrong.
-        fmt::format("f{}_copy{}_src{}{:03X}_{}x{}_f{}_e{}", guest_swap_count(),
-                    copy_index, copy_from_depth ? 'D' : 'C', copy_src_base,
+        fmt::format("f{}_copy{}_src{}{:03X}_{}x{}_f{}_e{}_b{:08X}",
+                    guest_swap_count(), copy_index,
+                    copy_from_depth ? 'D' : 'C', copy_src_base,
                     copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] & 0x3FFF,
                     (copy_regs[XE_GPU_REG_RB_COPY_DEST_PITCH] >> 16) & 0x3FFF,
                     uint32_t(copy_dest_info.copy_dest_format),
-                    uint32_t(copy_dest_info.copy_dest_endian))
+                    uint32_t(copy_dest_info.copy_dest_endian), copy_dest_base)
             .c_str(),
         written_address, written_length);
     if (dump_this_frame) {

@@ -1029,9 +1029,13 @@ void VulkanRenderTargetCache::EndSubmission() {
 bool VulkanRenderTargetCache::Resolve(
     const Memory& memory, VulkanSharedMemory& shared_memory,
     VulkanTextureCache& texture_cache, uint32_t& written_address_out,
-    uint32_t& written_length_out, reg::RB_COPY_DEST_INFO* copy_dest_info_out) {
+    uint32_t& written_length_out, reg::RB_COPY_DEST_INFO* copy_dest_info_out,
+    uint32_t* copy_dest_base_out) {
   written_address_out = 0;
   written_length_out = 0;
+  if (copy_dest_base_out) {
+    *copy_dest_base_out = 0;
+  }
 
   bool draw_resolution_scaled = IsDrawResolutionScaled();
 
@@ -1049,6 +1053,9 @@ bool VulkanRenderTargetCache::Resolve(
     // depth format instead of the raw guest-specified one for depth copies) -
     // the same value the destination extent was calculated for.
     *copy_dest_info_out = resolve_info.copy_dest_info;
+  }
+  if (copy_dest_base_out) {
+    *copy_dest_base_out = resolve_info.copy_dest_base;
   }
 
   // Nothing to copy/clear.
