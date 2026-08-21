@@ -10,6 +10,7 @@
 #include "xenia/gpu/vulkan/vulkan_pipeline_cache.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 
@@ -534,6 +535,21 @@ bool VulkanPipelineCache::ConfigurePipeline(
           normalized_depth_control, normalized_color_mask, render_pass_key,
           description)) {
     return false;
+  }
+  const char* gears_force_color_tests_off =
+      std::getenv("GEARS_ORACLE_FORCE_COLOR_TESTS_OFF");
+  if (pixel_shader && normalized_color_mask && gears_force_color_tests_off &&
+      *gears_force_color_tests_off && *gears_force_color_tests_off != '0') {
+    description.depth_write_enable = false;
+    description.depth_compare_op = xenos::CompareFunction::kAlways;
+    description.stencil_test_enable = false;
+    XELOGW(
+        "gears: DIAGNOSTIC disabled depth and stencil tests for a "
+        "color-writing pixel pipeline; normalized mask {:X}, render-pass key "
+        "{:08X}, attachments {:X}, RT0 pipeline mask {:X}",
+        normalized_color_mask, render_pass_key.key,
+        render_pass_key.depth_and_color_used,
+        description.render_targets[0].color_write_mask);
   }
   if (pixel_shader) {
     const uint64_t pixel_hash =

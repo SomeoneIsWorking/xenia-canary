@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 #include "third_party/glslang/SPIRV/GLSL.std.450.h"
@@ -1103,7 +1104,8 @@ bool VulkanRenderTargetCache::Resolve(
     if (copy_shader == draw_util::ResolveCopyShaderIndex::kUnknown) {
       XELOGE(
           "Resolve: no copy shader for this destination, so nothing is written "
-          "-- and IssueCopy still reports the byte count it would have written");
+          "-- and IssueCopy still reports the byte count it would have "
+          "written");
     }
     if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
       const draw_util::ResolveCopyShaderInfo& copy_shader_info =
@@ -5589,6 +5591,7 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
                                           &source_is_uint);
   }
   spv::Id source_component_type = source_is_uint ? type_uint : type_float;
+  spv::Id source_vec4_type = builder.makeVectorType(source_component_type, 4);
   spv::Id source_texture = builder.createVariable(
       spv::NoPrecision, spv::StorageClassUniformConstant,
       builder.makeImageType(source_component_type, spv::Dim2D, false, false,
@@ -5830,9 +5833,23 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
     source_texture_parameters.lod = builder.makeIntConstant(0);
   }
   spv::Id source_vec4 = builder.createTextureCall(
-      spv::NoPrecision, builder.makeVectorType(source_component_type, 4), false,
-      true, false, false, false, source_texture_parameters,
-      spv::ImageOperandsMaskNone);
+      spv::NoPrecision, source_vec4_type, false, true, false, false, false,
+      source_texture_parameters, spv::ImageOperandsMaskNone);
+  const char* gears_force_dump_white =
+      std::getenv("GEARS_ORACLE_FORCE_DUMP_WHITE");
+  if (!key.is_depth && gears_force_dump_white && *gears_force_dump_white &&
+      *gears_force_dump_white != '0') {
+    spv::Id one = source_is_uint ? builder.makeUintConstant(UINT32_MAX)
+                                 : builder.makeFloatConstant(1.0f);
+    id_vector_temp.clear();
+    id_vector_temp.resize(4, one);
+    source_vec4 =
+        builder.makeCompositeConstant(source_vec4_type, id_vector_temp);
+    XELOGW(
+        "gears: DIAGNOSTIC forced color render-target dump samples to white; "
+        "format {}, MSAA {}",
+        uint32_t(key.GetColorFormat()), uint32_t(key.msaa_samples));
+  }
   if (key.is_depth) {
     source_texture_parameters.sampler =
         builder.createLoad(source_stencil_texture, spv::NoPrecision);

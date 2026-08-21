@@ -8,11 +8,14 @@
  */
 
 #include "xenia/base/console_app_main.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/gpu/trace_dump.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
 #include "xenia/ui/vulkan/vulkan_provider.h"
+
+DECLARE_int32(vulkan_pipeline_creation_threads);
 
 namespace xe {
 namespace gpu {
@@ -50,6 +53,18 @@ class VulkanTraceDump : public TraceDump {
 };
 
 int trace_dump_main(const std::vector<std::string>& args) {
+  // A trace dump is evidence, not an interactive frame-rate path. With async
+  // creation, first-use draws run the placeholder pixel shader while their real
+  // pipelines compile; the completed pipeline cannot retroactively repair those
+  // render-target writes, so the dumped frame depends on cache warmth and may
+  // be black. Force synchronous creation before graphics-system setup so every
+  // packet is rendered by the pipeline it requested.
+  if (cvars::vulkan_pipeline_creation_threads != 0) {
+    XELOGI(
+        "Trace dump forces synchronous Vulkan pipeline creation; async "
+        "placeholder draws are not valid capture evidence");
+    cvars::vulkan_pipeline_creation_threads = 0;
+  }
   VulkanTraceDump trace_dump;
   return trace_dump.Main(args);
 }

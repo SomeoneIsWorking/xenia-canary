@@ -10,9 +10,11 @@
 #include "xenia/gpu/spirv_shader_translator.h"
 
 #include <cstdint>
+#include <cstdlib>
 
 #include "third_party/glslang/SPIRV/GLSL.std.450.h"
 #include "xenia/base/assert.h"
+#include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/render_target_cache.h"
@@ -469,6 +471,26 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
   }
 
   uint32_t color_targets_written = current_shader().writes_color_targets();
+
+  // Diagnostic that preserves the translated shader's EDRAM interlock,
+  // coverage, depth/stencil, packing and blending wrapper. Replacing the whole
+  // Vulkan fragment module cannot test EDRAM writes because a conventional
+  // location-0 output bypasses this backend's SSBO-based render targets.
+  const char* gears_force_white =
+      std::getenv("GEARS_ORACLE_FORCE_WHITE_OUTPUT");
+  if (gears_force_white && *gears_force_white && *gears_force_white != '0') {
+    uint32_t targets_remaining = color_targets_written;
+    uint32_t target_index;
+    while (xe::bit_scan_forward(targets_remaining, &target_index)) {
+      targets_remaining &= ~(UINT32_C(1) << target_index);
+      builder_->createStore(const_float4_1_,
+                            output_or_var_fragment_data_[target_index]);
+    }
+    XELOGW(
+        "gears: DIAGNOSTIC forced {} declared color output(s) to white "
+        "before backend color processing",
+        xe::bit_count(color_targets_written));
+  }
 
   if ((color_targets_written & 0b1) && !IsExecutionModeEarlyFragmentTests()) {
     spv::Id fsi_sample_mask_in_rt_0_alpha_tests = spv::NoResult;
@@ -1480,6 +1502,14 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
           }
         }
 
+        // Bypass every value transform at the final FBO output boundary too.
+        // The earlier white store is intentionally before alpha processing so
+        // the FSI path can use it; this one distinguishes a bad transform from
+        // an attachment or render-pass write failure in the host-RT path.
+        if (gears_force_white && *gears_force_white &&
+            *gears_force_white != '0') {
+          color = const_float4_1_;
+        }
         builder_->createStore(color, out_color);
       }
     }
