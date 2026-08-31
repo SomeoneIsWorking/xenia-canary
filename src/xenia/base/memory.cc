@@ -75,6 +75,9 @@ static void XeCopy16384StreamingAVX(CacheLine* XE_RESTRICT to,
   }
   XE_MSVC_REORDER_BARRIER();
 }
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((target("movdir64b")))
+#endif
 XE_FORCEINLINE
 static void XeCopy16384Movdir64M(CacheLine* XE_RESTRICT to,
                                  CacheLine* XE_RESTRICT from) {
@@ -142,6 +145,9 @@ static void vastcpy_impl_avx(CacheLine* XE_RESTRICT physaddr,
   }
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((target("movdir64b")))
+#endif
 static void vastcpy_impl_movdir64m(CacheLine* XE_RESTRICT physaddr,
                                    CacheLine* XE_RESTRICT rdmapping,
                                    uint32_t written_length) {
