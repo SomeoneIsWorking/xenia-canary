@@ -19,14 +19,21 @@ on:
       ubuntu_base:
         value: ${{ jobs.lint.outputs.ubuntu_base }}
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
     runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 20
     outputs:
       ubuntu_base: ${{ steps.setup.outputs.ubuntu_base }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Setup
         id: setup
         run: |-
