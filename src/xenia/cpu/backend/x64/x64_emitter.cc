@@ -824,6 +824,8 @@ void X64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
       mov(rcx, reinterpret_cast<uint64_t>(extern_function->extern_handler()));
       mov(rdx,
           qword[GetContextReg() + offsetof(ppc::PPCContext, kernel_state)]);
+      mov(r8, reinterpret_cast<uint64_t>(
+                  extern_function->extern_handler_context()));
       call(backend()->guest_to_host_thunk());
       // rax = host return
     }

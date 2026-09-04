@@ -1320,19 +1320,16 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
         GuestFunction::ExternHandler handler = nullptr;
         if (kernel_export) {
           if (kernel_export->function_data.trampoline) {
-            handler = (GuestFunction::ExternHandler)
-                          kernel_export->function_data.trampoline;
-          } else {
-            //__debugbreak();
-            // handler =
-            //     (GuestFunction::ExternHandler)kernel_export->function_data.shim;
+            handler = kernel_export->function_data.trampoline;
           }
         } else {
           XELOGW("WARNING: Imported kernel function {} is unimplemented!",
                  import_name.to_string_view());
         }
-        static_cast<GuestFunction*>(function)->SetupExtern(handler,
-                                                           kernel_export);
+        static_cast<GuestFunction*>(function)->SetupExtern(
+            handler, kernel_export,
+            kernel_export ? kernel_export->function_data.callback_context
+                          : nullptr);
       }
       function->set_status(Symbol::Status::kDeclared);
     } else {

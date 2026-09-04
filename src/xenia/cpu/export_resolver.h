@@ -17,6 +17,9 @@
 #include "xenia/cpu/ppc/ppc_context.h"
 
 namespace xe {
+namespace kernel {
+class KernelState;
+}  // namespace kernel
 namespace cpu {
 
 enum class ExportCategory : uint8_t {
@@ -65,10 +68,9 @@ struct ExportTag {
   static constexpr type kLogResult = 1u << 31;
 };
 
-// DEPRECATED
-typedef void (*xe_kernel_export_shim_fn)(void*, void*);
-
-typedef void (*ExportTrampoline)(ppc::PPCContext* ppc_context);
+using ExportTrampoline = void (*)(ppc::PPCContext* ppc_context,
+                                  kernel::KernelState* kernel_state,
+                                  void* callback_context);
 class Export {
  public:
   enum class Type {
@@ -77,7 +79,7 @@ class Export {
   };
   constexpr Export(uint16_t ordinal, Type type, const char* name,
                    ExportTag::type tags = 0)
-      : function_data({nullptr}),
+      : function_data({nullptr, nullptr}),
         name(name ? name : ""),
         tags(tags),
         ordinal(ordinal)
@@ -95,8 +97,9 @@ class Export {
 
     struct {
       // Trampoline that is called from the guest-to-host thunk.
-      // Expects only PPC context as first arg.
+      // Receives PPC context, kernel state, and the mapping's opaque context.
       ExportTrampoline trampoline;
+      void* callback_context;
     } function_data;
   };
   const char* const name;
@@ -149,9 +152,8 @@ class ExportResolver {
   void SetVariableMapping(const std::string_view module_name, uint16_t ordinal,
                           uint32_t value);
   void SetFunctionMapping(const std::string_view module_name, uint16_t ordinal,
-                          xe_kernel_export_shim_fn shim);
-  void SetFunctionMapping(const std::string_view module_name, uint16_t ordinal,
-                          ExportTrampoline trampoline);
+                          ExportTrampoline trampoline,
+                          void* callback_context = nullptr);
 
  private:
   std::vector<Table> tables_;

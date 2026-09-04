@@ -75,7 +75,8 @@ uint32_t KernelModule::GenerateTrampoline(
   function->set_end_address(guest_addr + 8);
   function->set_name(std::string("__T_") + name);
 
-  static_cast<cpu::GuestFunction*>(function)->SetupExtern(handler, export_data);
+  static_cast<cpu::GuestFunction*>(function)->SetupExtern(
+      handler, export_data, export_data->function_data.callback_context);
 
   function->set_status(cpu::Symbol::Status::kDeclared);
 
@@ -111,8 +112,7 @@ uint32_t KernelModule::GetProcAddressByOrdinal(uint16_t ordinal) {
 
       cpu::GuestFunction::ExternHandler handler = nullptr;
       if (export_entry->function_data.trampoline) {
-        handler = (cpu::GuestFunction::ExternHandler)
-                      export_entry->function_data.trampoline;
+        handler = export_entry->function_data.trampoline;
       }
 
       uint32_t guest_addr =

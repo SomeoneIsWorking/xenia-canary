@@ -543,7 +543,7 @@ struct ExportRegistrerHelper {
     static const auto export_entry =
         new cpu::Export(ORDINAL, xe::cpu::Export::Type::kFunction, name, TAGS);
     struct X {
-      static void Trampoline(PPCContext* ppc_context) {
+      static void Trampoline(PPCContext* ppc_context, KernelState*, void*) {
         Param::Init init = {
             ppc_context,
             0,
@@ -574,7 +574,7 @@ struct ExportRegistrerHelper {
       }
     };
     struct Y {
-      static void Trampoline(PPCContext* ppc_context) {
+      static void Trampoline(PPCContext* ppc_context, KernelState*, void*) {
         Param::Init init = {
             ppc_context,
             0,

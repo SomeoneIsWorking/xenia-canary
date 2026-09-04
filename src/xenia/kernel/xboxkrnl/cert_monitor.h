@@ -22,7 +22,7 @@ struct X_KECERTMONITORDATA {
 };
 
 void KeCertMonitorCallback(cpu::ppc::PPCContext* ppc_context,
-                           kernel::KernelState* kernel_state);
+                           kernel::KernelState* kernel_state, void*);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

@@ -30,7 +30,7 @@ enum class DebugMonitorCommand {
 };
 
 void KeDebugMonitorCallback(cpu::ppc::PPCContext* ppc_context,
-                            kernel::KernelState* kernel_state) {
+                            kernel::KernelState* kernel_state, void*) {
   auto id = static_cast<DebugMonitorCommand>(ppc_context->r[3] & 0xFFFFFFFFu);
   auto arg = static_cast<uint32_t>(ppc_context->r[4] & 0xFFFFFFFFu);
 

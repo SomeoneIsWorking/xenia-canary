@@ -77,20 +77,13 @@ void ExportResolver::SetVariableMapping(const std::string_view module_name,
 
 void ExportResolver::SetFunctionMapping(const std::string_view module_name,
                                         uint16_t ordinal,
-                                        xe_kernel_export_shim_fn shim) {
-  auto export_entry = GetExportByOrdinal(module_name, ordinal);
-  assert_not_null(export_entry);
-  export_entry->tags |= ExportTag::kImplemented;
-  export_entry->function_data.trampoline = (ExportTrampoline)(void*)shim;
-}
-
-void ExportResolver::SetFunctionMapping(const std::string_view module_name,
-                                        uint16_t ordinal,
-                                        ExportTrampoline trampoline) {
+                                        ExportTrampoline trampoline,
+                                        void* callback_context) {
   auto export_entry = GetExportByOrdinal(module_name, ordinal);
   assert_not_null(export_entry);
   export_entry->tags |= ExportTag::kImplemented;
   export_entry->function_data.trampoline = trampoline;
+  export_entry->function_data.callback_context = callback_context;
 }
 
 }  // namespace cpu

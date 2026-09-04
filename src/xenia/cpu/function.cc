@@ -60,9 +60,11 @@ GuestFunction::GuestFunction(Module* module, uint32_t address)
 
 GuestFunction::~GuestFunction() = default;
 
-void GuestFunction::SetupExtern(ExternHandler handler, Export* export_data) {
+void GuestFunction::SetupExtern(ExternHandler handler, Export* export_data,
+                                void* handler_context) {
   behavior_ = Behavior::kExtern;
   extern_handler_ = handler;
+  extern_handler_context_ = handler_context;
   export_data_ = export_data;
 }
 

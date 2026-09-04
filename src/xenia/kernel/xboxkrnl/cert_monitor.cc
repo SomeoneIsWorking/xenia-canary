@@ -18,7 +18,7 @@ namespace kernel {
 namespace xboxkrnl {
 
 void KeCertMonitorCallback(cpu::ppc::PPCContext* ppc_context,
-                           kernel::KernelState* kernel_state) {
+                           kernel::KernelState* kernel_state, void*) {
   auto id = ppc_context->r[3];
   auto arg = ppc_context->r[4];
   XELOGI("KeCertMonitorCallback({}, {:08X})", id, arg);
