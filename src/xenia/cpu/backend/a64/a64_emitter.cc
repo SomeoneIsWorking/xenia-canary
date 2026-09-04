@@ -456,10 +456,12 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
     auto extern_function = static_cast<const GuestFunction*>(function);
     if (extern_function->extern_handler()) {
       undefined = false;
-      // GuestToHostThunk: x0=target, x1=arg0
+      // GuestToHostThunk: x0=target, x1=arg0, x2=arg1
       mov(x0, reinterpret_cast<uint64_t>(extern_function->extern_handler()));
       ldr(x1, ptr(GetContextReg(), static_cast<int32_t>(offsetof(
                                        ppc::PPCContext, kernel_state))));
+      mov(x2, reinterpret_cast<uint64_t>(
+                  extern_function->extern_handler_context()));
       mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
       blr(x9);
     }

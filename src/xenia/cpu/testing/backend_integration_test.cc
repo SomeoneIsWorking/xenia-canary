@@ -19,6 +19,7 @@
 #elif XE_ARCH_ARM64
 #include "xenia/cpu/backend/a64/a64_backend.h"
 #endif
+#include "xenia/cpu/raw_module.h"
 
 using namespace xe;
 using namespace xe::cpu;
@@ -204,6 +205,110 @@ TEST_CASE("HOST_GUEST_HOST_ROUNDTRIP", "[backend]") {
   // Verify post-call code ran (guest code continued after GuestToHostThunk).
   REQUIRE(ctx->r[5] == 0x22222222);
 
+  memory->SystemHeapFree(stack_address);
+}
+
+// =============================================================================
+// Host -> Guest -> typed external callback -> Guest -> Host
+// =============================================================================
+
+struct ExternCallbackObservation {
+  PPCContext* ppc_context = nullptr;
+  kernel::KernelState* kernel_state = nullptr;
+  void* callback_context = nullptr;
+  uint64_t result_delta = 0;
+  uint32_t calls = 0;
+};
+
+static void ExternCallback(PPCContext* ppc_context,
+                           kernel::KernelState* kernel_state,
+                           void* callback_context) {
+  auto& observation =
+      *static_cast<ExternCallbackObservation*>(callback_context);
+  observation.ppc_context = ppc_context;
+  observation.kernel_state = kernel_state;
+  observation.callback_context = callback_context;
+  ++observation.calls;
+  ppc_context->r[3] += observation.result_delta;
+}
+
+TEST_CASE("EXTERN_TYPED_CALLBACK_CONTEXT_ROUNDTRIP", "[backend][extern]") {
+  auto memory = std::make_unique<Memory>();
+  REQUIRE(memory->Initialize());
+
+  std::unique_ptr<xe::cpu::backend::Backend> backend;
+#if XE_ARCH_AMD64
+  backend = std::make_unique<xe::cpu::backend::x64::X64Backend>();
+#elif XE_ARCH_ARM64
+  backend = std::make_unique<xe::cpu::backend::a64::A64Backend>();
+#endif
+  REQUIRE(backend);
+
+  auto processor = std::make_unique<Processor>(memory.get(), nullptr);
+  REQUIRE(processor->Setup(std::move(backend)));
+
+  ExternCallbackObservation first_observation{.result_delta = 3};
+  ExternCallbackObservation second_observation{.result_delta = 5};
+  auto extern_module = std::make_unique<RawModule>(processor.get());
+  extern_module->set_name("ExternCallbacks");
+  extern_module->SetAddressRange(0x80000100, 0x100);
+  Function* first_extern = nullptr;
+  Function* second_extern = nullptr;
+  REQUIRE(extern_module->DeclareFunction(0x80000100, &first_extern) ==
+          Symbol::Status::kNew);
+  REQUIRE(extern_module->DeclareFunction(0x80000110, &second_extern) ==
+          Symbol::Status::kNew);
+  REQUIRE(first_extern != nullptr);
+  REQUIRE(second_extern != nullptr);
+  static_cast<GuestFunction*>(first_extern)
+      ->SetupExtern(ExternCallback, nullptr, &first_observation);
+  static_cast<GuestFunction*>(second_extern)
+      ->SetupExtern(ExternCallback, nullptr, &second_observation);
+  first_extern->set_status(Symbol::Status::kDeclared);
+  second_extern->set_status(Symbol::Status::kDeclared);
+  REQUIRE(processor->AddModule(std::move(extern_module)));
+
+  auto caller_module = std::make_unique<TestModule>(
+      processor.get(), "ExternCaller",
+      [](uint32_t address) { return address == 0x80000000; },
+      [first_extern, second_extern](HIRBuilder& b) {
+        StoreGPR(b, 3, b.LoadConstantUint64(7));
+        b.CallExtern(first_extern);
+        b.CallExtern(second_extern);
+        StoreGPR(b, 5, b.LoadConstantUint64(0x22222222));
+        b.Return();
+        return true;
+      },
+      /*skip_cf_simplification=*/true);
+  REQUIRE(processor->AddModule(std::move(caller_module)));
+  processor->backend()->CommitExecutableRange(0x80000000, 0x80000200);
+
+  Function* caller = processor->ResolveFunction(0x80000000);
+  REQUIRE(caller != nullptr);
+  constexpr uint32_t stack_size = 64 * 1024;
+  const uint32_t stack_address = memory->SystemHeapAlloc(stack_size);
+  REQUIRE(stack_address != 0);
+  auto thread_state = std::make_unique<ThreadState>(processor.get(), 0x100,
+                                                    stack_address + stack_size);
+  PPCContext* ppc_context = thread_state->context();
+  auto* expected_kernel_state = reinterpret_cast<kernel::KernelState*>(
+      static_cast<uintptr_t>(0x12340000));
+  ppc_context->kernel_state = expected_kernel_state;
+  ppc_context->lr = 0xBCBCBCBC;
+
+  REQUIRE(caller->Call(thread_state.get(), uint32_t(ppc_context->lr)));
+  REQUIRE(first_observation.calls == 1);
+  REQUIRE(second_observation.calls == 1);
+  REQUIRE(first_observation.ppc_context == ppc_context);
+  REQUIRE(second_observation.ppc_context == ppc_context);
+  REQUIRE(first_observation.kernel_state == expected_kernel_state);
+  REQUIRE(second_observation.kernel_state == expected_kernel_state);
+  REQUIRE(first_observation.callback_context == &first_observation);
+  REQUIRE(second_observation.callback_context == &second_observation);
+  REQUIRE(ppc_context->r[3] == 15);
+  REQUIRE(ppc_context->r[5] == 0x22222222);
+
+  thread_state.reset();
   memory->SystemHeapFree(stack_address);
 }
 

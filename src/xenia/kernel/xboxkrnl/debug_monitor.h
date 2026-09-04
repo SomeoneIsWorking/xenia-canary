@@ -30,7 +30,7 @@ struct X_KEDEBUGMONITORDATA {
 };
 
 void KeDebugMonitorCallback(cpu::ppc::PPCContext* ppc_context,
-                            kernel::KernelState* kernel_state);
+                            kernel::KernelState* kernel_state, void*);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

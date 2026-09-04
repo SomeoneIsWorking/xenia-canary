@@ -13,6 +13,7 @@
 #include <memory>
 #include <vector>
 
+#include "xenia/cpu/export_resolver.h"
 #include "xenia/cpu/function_debug_info.h"
 #include "xenia/cpu/function_trace_data.h"
 #include "xenia/cpu/ppc/ppc_context.h"
@@ -20,10 +21,6 @@
 #include "xenia/cpu/thread_state.h"
 
 namespace xe {
-namespace cpu {
-class Export;
-}  // namespace cpu
-
 namespace cpu {
 
 struct SourceMapEntry {
@@ -116,8 +113,7 @@ class BuiltinFunction : public Function {
 
 class GuestFunction : public Function {
  public:
-  typedef void (*ExternHandler)(ppc::PPCContext* ppc_context,
-                                kernel::KernelState* kernel_state);
+  using ExternHandler = ExportTrampoline;
 
   GuestFunction(Module* module, uint32_t address);
   ~GuestFunction() override;
@@ -138,8 +134,10 @@ class GuestFunction : public Function {
   std::vector<SourceMapEntry>& source_map() { return source_map_; }
 
   ExternHandler extern_handler() const { return extern_handler_; }
+  void* extern_handler_context() const { return extern_handler_context_; }
   Export* export_data() const { return export_data_; }
-  void SetupExtern(ExternHandler handler, Export* export_data = nullptr);
+  void SetupExtern(ExternHandler handler, Export* export_data = nullptr,
+                   void* handler_context = nullptr);
 
   const SourceMapEntry* LookupGuestAddress(uint32_t guest_address) const;
   const SourceMapEntry* LookupHIROffset(uint32_t offset) const;
@@ -159,6 +157,7 @@ class GuestFunction : public Function {
   FunctionTraceData trace_data_;
   std::vector<SourceMapEntry> source_map_;
   ExternHandler extern_handler_ = nullptr;
+  void* extern_handler_context_ = nullptr;
   Export* export_data_ = nullptr;
 };
 
