@@ -3,19 +3,24 @@ name: Windows (x86-64)
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build
     runs-on: windows-2025-vs2026
+    timeout-minutes: 120
 
     env:
       POWERSHELL_TELEMETRY_OPTOUT: 1
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Cache Vulkan SDK
         id: cache-vulkan-sdk
