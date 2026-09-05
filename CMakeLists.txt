@@ -118,8 +118,11 @@ if(MSVC)
   add_compile_options(
     /utf-8       # Build correctly on systems with non-Latin codepages
     /wd4201      # Nameless struct/unions are ok
-    /MP          # Multi-processor compilation
   )
+  # Ninja owns parallelism for clang-cl; /MP belongs to the MSVC compiler.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    add_compile_options(/MP)
+  endif()
   if(XE_TARGET_X86_64)
     add_compile_options(/arch:AVX)
   endif()
@@ -206,7 +209,11 @@ else()
         $<$<COMPILE_LANGUAGE:CXX>:-Wno-nontrivial-memcall>
       )
     endif()
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 21)
+    # AppleClang's version does not map to upstream LLVM releases. Probe the
+    # positive warning spelling so unknown -Wno-* options cannot pass silently.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-Wcharacter-conversion" XE_HAS_CHARACTER_CONVERSION_WARNING)
+    if(XE_HAS_CHARACTER_CONVERSION_WARNING)
       add_compile_options(
         $<$<COMPILE_LANGUAGE:CXX>:-Wno-character-conversion>
       )
@@ -237,7 +244,6 @@ else()
     add_compile_options(
       $<$<COMPILE_LANGUAGE:CXX>:-Wno-shorten-64-to-32>
       -Wno-deprecated-declarations
-      -Wno-character-conversion
     )
     add_link_options(-Wl,-no_warn_duplicate_libraries)
     link_libraries(
