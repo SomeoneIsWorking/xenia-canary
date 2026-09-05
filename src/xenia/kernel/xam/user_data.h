@@ -166,9 +166,10 @@ class UserData {
         case X_USER_DATA_TYPE::DOUBLE:
         case X_USER_DATA_TYPE::INT64:
           return sizeof(uint64_t);
-      }
 
-      return sizeof(uint64_t);
+        default:
+          return sizeof(uint64_t);
+      }
     }
 
     if (!provided_size) {
