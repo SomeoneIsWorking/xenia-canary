@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <thread>
+
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -323,7 +325,7 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
           auto dialog = xe::ui::ImGuiDialog::ShowMessageBox(
               imgui_drawer, title.c_str(), message.c_str());
 
-          std::jthread([dialog]() {
+          std::thread([dialog]() {
             while (!dialog->IsClosing()) {
               std::this_thread::yield();
             }
@@ -355,7 +357,7 @@ void XamLoaderTerminateTitle_entry() {
           auto dialog = xe::ui::ImGuiDialog::ShowMessageBox(
               imgui_drawer, title.c_str(), message.c_str());
 
-          std::jthread([dialog]() {
+          std::thread([dialog]() {
             while (!dialog->IsClosing()) {
               std::this_thread::yield();
             }
