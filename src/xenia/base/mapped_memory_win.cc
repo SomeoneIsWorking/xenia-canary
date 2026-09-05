@@ -26,8 +26,8 @@ namespace xe {
 class Win32MappedMemory : public MappedMemory {
  public:
   // CreateFile returns INVALID_HANDLE_VALUE in case of failure.
-  // chrispy: made inline const to get around clang error
-  static inline constexpr HANDLE kFileHandleInvalid = INVALID_HANDLE_VALUE;
+  // The integer-to-pointer Windows sentinel is not a C++ constant expression.
+  static inline const HANDLE kFileHandleInvalid = INVALID_HANDLE_VALUE;
   // CreateFileMapping returns nullptr in case of failure.
   static constexpr HANDLE kMappingHandleInvalid = nullptr;
 
