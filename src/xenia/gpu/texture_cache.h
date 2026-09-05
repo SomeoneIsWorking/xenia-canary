@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <type_traits>
 #include <unordered_map>
 
 #include "xenia/base/assert.h"
@@ -198,16 +199,15 @@ class TextureCache {
     // Least important in ==, so placed last.
     uint32_t is_valid : 1;  // 98
 
+    // Make every hashed bit a member so trivial copies preserve the complete
+    // representation. MakeInvalid initializes these unused bits to zero.
+    uint32_t reserved : 30;  // 128
+
     TextureKey() { MakeInvalid(); }
-    TextureKey(const TextureKey& key) {
-      std::memcpy(this, &key, sizeof(*this));
-    }
-    TextureKey& operator=(const TextureKey& key) {
-      std::memcpy(this, &key, sizeof(*this));
-      return *this;
-    }
+    TextureKey(const TextureKey& key) = default;
+    TextureKey& operator=(const TextureKey& key) = default;
     void MakeInvalid() {
-      // Zero everything, including the padding, for a stable hash.
+      // Initialize the complete representation for a stable hash.
       std::memset(this, 0, sizeof(*this));
     }
 
@@ -235,6 +235,8 @@ class TextureCache {
     }
     void LogAction(const char* action) const;
   };
+  static_assert(sizeof(TextureKey) == 16);
+  static_assert(std::has_unique_object_representations_v<TextureKey>);
 
   class Texture {
    public:

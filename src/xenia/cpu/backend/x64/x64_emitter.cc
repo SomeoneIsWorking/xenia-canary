@@ -1527,8 +1527,9 @@ static bool IsFlaggedVectorOp(const Instr* i) {
     case OPCODE_VECTOR_ADD:
     case OPCODE_SWIZZLE:
       return true;
+    default:
+      return false;
   }
-  return false;
 }
 
 static SimdDomain GetDomainForFlaggedVectorOp(const hir::Instr* df) {
@@ -1565,8 +1566,9 @@ static bool IsDefiniteIntegerDomainOpcode(hir::Opcode opc) {
     case OPCODE_EXTRACT:
     case OPCODE_INSERT:  // apparently no f32 type for these two
       return true;
+    default:
+      return false;
   }
-  return false;
 }
 static bool IsDefiniteFloatingDomainOpcode(hir::Opcode opc) {
   using namespace hir;
@@ -1585,8 +1587,9 @@ static bool IsDefiniteFloatingDomainOpcode(hir::Opcode opc) {
     case OPCODE_MUL_ADD:
     case OPCODE_ABS:
       return true;
+    default:
+      return false;
   }
-  return false;
 }
 
 SimdDomain X64Emitter::DeduceSimdDomain(const hir::Value* for_value) {

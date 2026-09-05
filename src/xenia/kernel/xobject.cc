@@ -128,6 +128,7 @@ bool XObject::RestoreObject(ByteStream* stream) {
 object_ref<XObject> XObject::Restore(KernelState* kernel_state, Type type,
                                      ByteStream* stream) {
   switch (type) {
+    case Type::Device:
     case Type::Enumerator:
       break;
     case Type::Event:

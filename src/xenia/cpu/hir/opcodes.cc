@@ -29,8 +29,9 @@ const char* GetOpcodeName(Opcode num) {
     return name;
 #include "xenia/cpu/hir/opcodes.inl"
 #undef DEFINE_OPCODE
+    default:
+      return "invalid opcode";
   }
-  return "invalid opcode";
 }
 }  // namespace hir
 }  // namespace cpu

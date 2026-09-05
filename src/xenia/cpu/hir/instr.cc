@@ -206,8 +206,9 @@ bool Instr::IsFake() const {
     case OPCODE_CONTEXT_BARRIER:
     case OPCODE_SOURCE_OFFSET:
       return true;
+    default:
+      return false;
   }
-  return false;
 }
 
 const Instr* Instr::GetNonFakePrev() const {

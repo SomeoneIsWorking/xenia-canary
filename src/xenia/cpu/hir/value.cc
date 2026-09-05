@@ -916,6 +916,8 @@ void Value::Insert(Value* index, Value* part, TypeName type) {
     case INT32_TYPE:
       me->u32[index->constant.u8] = part->constant.u32;
       break;
+    default:
+      std::abort();
   }
 }
 void Value::Swizzle(uint32_t mask, TypeName type) {
@@ -953,6 +955,8 @@ void Value::Select(Value* other, Value* ctrl) {
         case FLOAT64_TYPE:
           constant.u64 = other->constant.u64;
           break;
+        default:
+          std::abort();
       }
     }
   }
