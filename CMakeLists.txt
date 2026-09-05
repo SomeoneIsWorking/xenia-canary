@@ -35,13 +35,14 @@ message(STATUS "Target architecture: XE_TARGET_AARCH64=${XE_TARGET_AARCH64} XE_T
 
 # Options
 option(XENIA_BUILD_TESTS "Build test suites" OFF)
+option(XENIA_BUILD_PORTABILITY_TESTS "Build the focused representation and HIR portability tests" OFF)
 option(XENIA_BUILD_MISC "Build misc subprojects (trace viewers, shader compiler, vfs-dump, demos)" OFF)
 
 # Toggle profiler
 add_compile_definitions(XE_OPTION_PROFILING=0)
 add_compile_definitions(XE_OPTION_PROFILING_UI=0)
 
-if(XENIA_BUILD_TESTS)
+if(XENIA_BUILD_TESTS OR XENIA_BUILD_PORTABILITY_TESTS)
   enable_testing()
   include(${PROJECT_SOURCE_DIR}/third_party/catch/contrib/Catch.cmake)
 endif()
@@ -326,6 +327,27 @@ add_subdirectory(third_party)
 # Xenia source modules (xe_target_defaults applies -Werror)
 set(CMAKE_FOLDER "src")
 add_subdirectory(src/xenia)
+
+if(XENIA_BUILD_PORTABILITY_TESTS)
+  xe_test_suite(xenia-portability-tests "${PROJECT_SOURCE_DIR}"
+    TEST_SPEC "~[.hir-fatal]"
+    SOURCES
+      src/xenia/base/testing/byte_order_test.cc
+      src/xenia/cpu/testing/hir_contract_test.cc
+      src/xenia/gpu/testing/texture_key_test.cc
+    LINKS fmt xenia-base xenia-core xenia-cpu)
+  target_compile_definitions(xenia-portability-tests PRIVATE XE_TEST_HIR_FATAL_CASES=1)
+  foreach(_case IN ITEMS "HIR rejects invalid insert type"
+                         "HIR rejects vector input to scalar select")
+    add_test(NAME "${_case}"
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/build/hir_abort.py"
+        "$<TARGET_FILE:xenia-portability-tests>" "${_case}")
+    set_tests_properties("${_case}" PROPERTIES TIMEOUT 30)
+  endforeach()
+  add_test(NAME xenia-hir-abort-harness
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+      -s "${PROJECT_SOURCE_DIR}/tools/build/tests" -p test_hir_abort.py)
+endif()
 
 set(CMAKE_FOLDER "")
 

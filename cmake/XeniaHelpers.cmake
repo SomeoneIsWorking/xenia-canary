@@ -237,13 +237,28 @@ function(xe_force_cxx)
   set_source_files_properties(${ARGN} PROPERTIES LANGUAGE CXX)
 endfunction()
 
-# xe_test_suite(name base_path LINKS lib1 lib2 ...)
+# xe_test_suite(name base_path [SOURCES source1 source2 ...] [TEST_SPEC filter]
+#               LINKS lib1 lib2 ...)
 #
-# Creates a Catch2 test executable from *_test.cc files in base_path.
+# Creates a Catch2 test executable from explicit sources or *_test.cc in base_path.
 function(xe_test_suite name base_path)
-  cmake_parse_arguments(ARG "" "" "LINKS" ${ARGN})
+  cmake_parse_arguments(ARG "" "TEST_SPEC" "SOURCES;LINKS" ${ARGN})
 
-  file(GLOB _test_sources "${base_path}/*_test.cc")
+  if("SOURCES" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
+    message(FATAL_ERROR "${name}: explicit SOURCES must not be empty")
+  endif()
+  if(ARG_SOURCES)
+    set(_test_sources)
+    foreach(_source IN LISTS ARG_SOURCES)
+      get_filename_component(_source "${_source}" ABSOLUTE BASE_DIR "${base_path}")
+      if(NOT EXISTS "${_source}" OR IS_DIRECTORY "${_source}")
+        message(FATAL_ERROR "${name}: explicit test source is missing: ${_source}")
+      endif()
+      list(APPEND _test_sources "${_source}")
+    endforeach()
+  else()
+    file(GLOB _test_sources "${base_path}/*_test.cc")
+  endif()
 
   if(NOT _test_sources)
     return()
@@ -282,5 +297,5 @@ function(xe_test_suite name base_path)
     target_compile_options(${name} PRIVATE /Zi)
   endif()
 
-  catch_discover_tests(${name})
+  catch_discover_tests(${name} TEST_SPEC ${ARG_TEST_SPEC})
 endfunction()

@@ -403,6 +403,8 @@ redo:
       }
       break;
     }
+    default:
+      break;
   }
 
   if (Is1BitOpcode(def_opcode)) {
@@ -1370,8 +1372,9 @@ bool SimplificationPass::SimplifyBasicArith(hir::Instr* i,
     case OPCODE_SHL: {
       return SimplifySHLArith(i, builder);
     }
+    default:
+      return false;
   }
-  return false;
 }
 bool SimplificationPass::SimplifyBasicArith(hir::HIRBuilder* builder) {
   bool result = false;

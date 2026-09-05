@@ -137,7 +137,12 @@
 #define XE_MSVC_ASSUME(...) static_cast<void>(0)
 
 #endif
-#if XE_COMPILER_HAS_MSVC_EXTENSIONS == 1
+#if XE_COMPILER_CLANG_CL == 1
+// clang-cl accepts Microsoft's pragma syntax, but not its size selector.
+// Apply the equivalent preference to the following function only.
+#define XE_MSVC_OPTIMIZE_SMALL() [[clang::minsize]]
+#define XE_MSVC_OPTIMIZE_REVERT()
+#elif XE_COMPILER_HAS_MSVC_EXTENSIONS == 1
 #define XE_MSVC_OPTIMIZE_SMALL() __pragma(optimize("s", on))
 #define XE_MSVC_OPTIMIZE_REVERT() __pragma(optimize("", on))
 #else

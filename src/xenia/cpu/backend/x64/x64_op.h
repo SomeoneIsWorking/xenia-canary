@@ -30,20 +30,26 @@ using namespace Xbyak;
 #define VEC128_D(n) (n)
 #define VEC128_F(n) (n)
 
+using InstrKeyValue = uint32_t;
+
+constexpr InstrKeyValue GetValueKeyType(TypeName type) {
+  return static_cast<InstrKeyValue>(OPCODE_SIG_TYPE_V) +
+         static_cast<InstrKeyValue>(type);
+}
+
 enum KeyType {
   KEY_TYPE_X = OPCODE_SIG_TYPE_X,
   KEY_TYPE_L = OPCODE_SIG_TYPE_L,
   KEY_TYPE_O = OPCODE_SIG_TYPE_O,
   KEY_TYPE_S = OPCODE_SIG_TYPE_S,
-  KEY_TYPE_V_I8 = OPCODE_SIG_TYPE_V + INT8_TYPE,
-  KEY_TYPE_V_I16 = OPCODE_SIG_TYPE_V + INT16_TYPE,
-  KEY_TYPE_V_I32 = OPCODE_SIG_TYPE_V + INT32_TYPE,
-  KEY_TYPE_V_I64 = OPCODE_SIG_TYPE_V + INT64_TYPE,
-  KEY_TYPE_V_F32 = OPCODE_SIG_TYPE_V + FLOAT32_TYPE,
-  KEY_TYPE_V_F64 = OPCODE_SIG_TYPE_V + FLOAT64_TYPE,
-  KEY_TYPE_V_V128 = OPCODE_SIG_TYPE_V + VEC128_TYPE,
+  KEY_TYPE_V_I8 = GetValueKeyType(INT8_TYPE),
+  KEY_TYPE_V_I16 = GetValueKeyType(INT16_TYPE),
+  KEY_TYPE_V_I32 = GetValueKeyType(INT32_TYPE),
+  KEY_TYPE_V_I64 = GetValueKeyType(INT64_TYPE),
+  KEY_TYPE_V_F32 = GetValueKeyType(FLOAT32_TYPE),
+  KEY_TYPE_V_F64 = GetValueKeyType(FLOAT64_TYPE),
+  KEY_TYPE_V_V128 = GetValueKeyType(VEC128_TYPE),
 };
-using InstrKeyValue = uint32_t;
 #pragma pack(push, 1)
 union InstrKey {
   InstrKeyValue value;
@@ -85,18 +91,18 @@ union InstrKey {
     Value* src3v = i->src3.value;
 
     if (out_src1type == OPCODE_SIG_TYPE_V) {
-      out_src1type += src1v->type;
+      out_src1type = GetValueKeyType(src1v->type);
     }
 
     if (out_src2type == OPCODE_SIG_TYPE_V) {
-      out_src2type += src2v->type;
+      out_src2type = GetValueKeyType(src2v->type);
     }
 
     if (out_src3type == OPCODE_SIG_TYPE_V) {
-      out_src3type += src3v->type;
+      out_src3type = GetValueKeyType(src3v->type);
     }
     opcode = info->num;
-    dest = out_desttype ? OPCODE_SIG_TYPE_V + destv->type : 0;
+    dest = out_desttype ? GetValueKeyType(destv->type) : 0;
     src1 = out_src1type;
     src2 = out_src2type;
     src3 = out_src3type;

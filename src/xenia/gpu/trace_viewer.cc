@@ -370,6 +370,8 @@ void TraceViewer::DrawPacketDisassemblerUI() {
                   ImGui::Text("%.16" PRIX64, action.set_bin_select.value);
                   break;
                 }
+                default:
+                  break;
               }
             }
             ImGui::TreePop();
