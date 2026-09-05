@@ -275,88 +275,21 @@ target_link_libraries(zarchive PUBLIC zstd)
 # ==============================================================================
 # zlib-ng
 # ==============================================================================
-# Generate headers if missing
-set(_zlibng_needs_configure FALSE)
-foreach(_hdr zlib-ng.h zconf-ng.h zlib_name_mangling-ng.h gzread.c)
-  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/zlib-ng/${_hdr}")
-    set(_zlibng_needs_configure TRUE)
-    break()
-  endif()
-endforeach()
-if(_zlibng_needs_configure)
-  execute_process(
-    COMMAND ${CMAKE_COMMAND}
-      -DZLIB_ENABLE_TESTS=OFF
-      -DWITH_GTEST=OFF
-      ${CMAKE_CURRENT_SOURCE_DIR}/zlib-ng
-      -B${CMAKE_CURRENT_SOURCE_DIR}/zlib-ng
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-  )
-endif()
-file(GLOB _zlibng_c "zlib-ng/*.c")
-file(GLOB _zlibng_generic "zlib-ng/arch/generic/*.c")
-if(XE_TARGET_AARCH64)
-  file(GLOB _zlibng_arch "zlib-ng/arch/arm/*.c")
-  list(FILTER _zlibng_arch EXCLUDE REGEX "armv6")
-  add_library(zlib-ng STATIC
-    ${_zlibng_c}
-    ${_zlibng_arch}
-    ${_zlibng_generic}
-  )
-  target_compile_definitions(zlib-ng PRIVATE
-    ARM_FEATURES
-    ARM_NEON
-    ARM_NEON_HASLD4
-    ARM_ACLE
-    HAVE_ARM_ACLE_H
-    WITH_GZFILEOP
-  )
-  if(NOT MSVC)
-    target_compile_definitions(zlib-ng PRIVATE HAVE_BUILTIN_CTZ HAVE_BUILTIN_CTZLL)
-  endif()
-else()
-  file(GLOB _zlibng_x86 "zlib-ng/arch/x86/*.c")
-  add_library(zlib-ng STATIC
-    ${_zlibng_c}
-    ${_zlibng_x86}
-    ${_zlibng_generic}
-  )
-  target_compile_definitions(zlib-ng PRIVATE
-    X86_FEATURES
-    X86_HAVE_XSAVE_INTRIN
-    X86_SSE2
-    X86_SSSE3
-    X86_SSE42
-    X86_AVX2
-    X86_AVX512
-    X86_AVX512VNNI
-    WITH_GZFILEOP
-  )
-  if(NOT MSVC)
-    # GCC/Clang have native __builtin_ctz/__builtin_ctzll (MSVC gets these
-    # from fallback_builtins.h). Defining these enables optimized compare256
-    # and longest_match codepaths.
-    target_compile_definitions(zlib-ng PRIVATE HAVE_BUILTIN_CTZ HAVE_BUILTIN_CTZLL)
-    # GCC/Clang need per-file ISA flags; MSVC handles this via runtime dispatch
-    set_source_files_properties(
-      zlib-ng/arch/x86/adler32_avx2.c
-      zlib-ng/arch/x86/chunkset_avx2.c
-      zlib-ng/arch/x86/compare256_avx2.c
-      zlib-ng/arch/x86/slide_hash_avx2.c
-      PROPERTIES COMPILE_OPTIONS "-mavx2;-mbmi2"
-    )
-    set_source_files_properties(
-      zlib-ng/arch/x86/adler32_avx512.c
-      zlib-ng/arch/x86/chunkset_avx512.c
-      PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512dq;-mavx512vl;-mavx512bw;-mbmi2"
-    )
-    set_source_files_properties(
-      zlib-ng/arch/x86/adler32_avx512_vnni.c
-      PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512dq;-mavx512vl;-mavx512bw;-mavx512vnni;-mbmi2"
-    )
-  endif()
-endif()
-target_include_directories(zlib-ng PUBLIC zlib-ng)
+# Keep feature probes, source selection, ISA options, and generated headers in
+# zlib-ng's own build. Compiler driver compatibility is not builtin availability.
+function(xenia_add_zlib_ng)
+  set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+  set(CMAKE_C_STANDARD 11)
+  set(BUILD_SHARED_LIBS OFF)
+  set(ZLIB_COMPAT OFF)
+  set(ZLIB_ENABLE_TESTS OFF)
+  set(ZLIBNG_ENABLE_TESTS OFF)
+  set(WITH_GTEST OFF)
+  set(SKIP_INSTALL_ALL ON)
+  add_subdirectory(zlib-ng)
+  add_library(zlib-ng ALIAS zlib)
+endfunction()
+xenia_add_zlib_ng()
 
 # ==============================================================================
 # libusb (Windows only)
