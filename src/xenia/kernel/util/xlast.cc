@@ -8,7 +8,7 @@
  */
 
 #include "xenia/kernel/util/xlast.h"
-#include "third_party/zlib-ng/zlib-ng.h"
+#include <zlib-ng.h>
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
