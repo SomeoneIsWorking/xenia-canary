@@ -562,6 +562,9 @@ int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
 }
 
 int XexModule::ReadImageUncompressed(const void* xex_addr, size_t xex_length) {
+  if (xex_length < xex_header()->header_size) {
+    return 1;
+  }
   // Allocate in-place the XEX memory.
   const uint32_t exe_length =
       static_cast<uint32_t>(xex_length - xex_header()->header_size);
@@ -592,6 +595,9 @@ int XexModule::ReadImageUncompressed(const void* xex_addr, size_t xex_length) {
       memcpy(buffer, p, exe_length);
       return 0;
     case XEX_ENCRYPTION_NORMAL:
+      if ((exe_length & 15U) != 0U) {
+        return 1;
+      }
       aes_decrypt_buffer(session_key_, p, exe_length, buffer,
                          uncompressed_size);
       return 0;
@@ -605,6 +611,9 @@ int XexModule::ReadImageUncompressed(const void* xex_addr, size_t xex_length) {
 
 int XexModule::ReadImageBasicCompressed(const void* xex_addr,
                                         size_t xex_length) {
+  if (xex_length < xex_header()->header_size) {
+    return 1;
+  }
   const uint32_t exe_length =
       static_cast<uint32_t>(xex_length - xex_header()->header_size);
   const uint8_t* source_buffer =
@@ -619,11 +628,37 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   auto* file_info = opt_file_format_info();
   auto& comp_info = file_info->compression_info.basic;
 
+  if (file_info->info_size < 8 || (file_info->info_size - 8) % 8 != 0) {
+    return 1;
+  }
   uint32_t block_count = (file_info->info_size - 8) / 8;
+  if (block_count == 0) {
+    return 1;
+  }
+  uint64_t source_size = 0;
+  uint64_t declared_output_size = 0;
   for (uint32_t n = 0; n < block_count; n++) {
     const uint32_t data_size = comp_info.blocks[n].data_size;
     const uint32_t zero_size = comp_info.blocks[n].zero_size;
-    uncompressed_size += data_size + zero_size;
+    source_size += data_size;
+    declared_output_size += static_cast<uint64_t>(data_size) + zero_size;
+    if (source_size > exe_length || declared_output_size > UINT32_MAX) {
+      return 1;
+    }
+  }
+  if (source_size != exe_length || declared_output_size == 0) {
+    return 1;
+  }
+  uncompressed_size = static_cast<uint32_t>(declared_output_size);
+  if (uncompressed_size > image_size()) {
+    return 1;
+  }
+  if (opt_file_format_info()->encryption_type == XEX_ENCRYPTION_NORMAL) {
+    for (uint32_t n = 0; n < block_count; n++) {
+      if ((comp_info.blocks[n].data_size & 15U) != 0U) {
+        return 1;
+      }
+    }
   }
 
   // Calculate the total size of the XEX image from its headers.
@@ -650,6 +685,8 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   uint8_t* buffer = memory()->TranslateVirtual(base_address_);
   std::memset(buffer, 0, total_size);  // Quickly zero the contents.
   uint8_t* d = buffer;
+  uint64_t source_offset = 0;
+  uint64_t output_offset = 0;
 
   uint32_t rk[4 * (MAXNR + 1)];
   uint8_t ivec[16] = {0};
@@ -658,6 +695,10 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   for (size_t n = 0; n < block_count; n++) {
     const uint32_t data_size = comp_info.blocks[n].data_size;
     const uint32_t zero_size = comp_info.blocks[n].zero_size;
+    if (source_offset + data_size > exe_length ||
+        output_offset + data_size + zero_size > total_size) {
+      return 1;
+    }
 
     switch (opt_file_format_info()->encryption_type) {
       case XEX_ENCRYPTION_NONE:
@@ -688,12 +729,17 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
 
     p += data_size;
     d += data_size + zero_size;
+    source_offset += data_size;
+    output_offset += data_size + zero_size;
   }
 
   return 0;
 }
 
 int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
+  if (xex_length < xex_header()->header_size) {
+    return 1;
+  }
   const uint32_t exe_length =
       static_cast<uint32_t>(xex_length - xex_header()->header_size);
   const uint8_t* exe_buffer =
@@ -722,6 +768,9 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
       // No-op.
       break;
     case XEX_ENCRYPTION_NORMAL:
+      if ((exe_length & 15U) != 0U) {
+        return 1;
+      }
       // TODO: a way to do without a copy/alloc?
       free_input = true;
       input_buffer = (const uint8_t*)calloc(1, exe_length);
@@ -739,6 +788,7 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
 
   compress_buffer = (uint8_t*)calloc(1, exe_length);
 
+  size_t input_offset = 0;
   p = input_buffer;
   d = compress_buffer;
 
@@ -747,7 +797,13 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
 
   uint8_t block_calced_digest[0x14];
   while (cur_block->block_size) {
-    const uint8_t* pnext = p + cur_block->block_size;
+    const uint32_t block_size = cur_block->block_size;
+    if (block_size < sizeof(xex2_compressed_block_info) ||
+        block_size > input_size - input_offset) {
+      result_code = 1;
+      break;
+    }
+    const uint8_t* pnext = p + block_size;
     const auto* next_block = (const xex2_compressed_block_info*)p;
 
     // Compare block hash, if no match we probably used wrong decrypt key
@@ -763,10 +819,22 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
     p += 4;
     p += 20;
 
-    while (true) {
+    bool found_terminator = false;
+    while (p < pnext) {
+      if (static_cast<size_t>(pnext - p) < sizeof(uint16_t)) {
+        result_code = 1;
+        break;
+      }
       const size_t chunk_size = (p[0] << 8) | p[1];
       p += 2;
       if (!chunk_size) {
+        found_terminator = true;
+        break;
+      }
+      if (chunk_size > static_cast<size_t>(pnext - p) ||
+          chunk_size > exe_length ||
+          static_cast<size_t>(d - compress_buffer) > exe_length - chunk_size) {
+        result_code = 1;
         break;
       }
 
@@ -774,8 +842,13 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
       p += chunk_size;
       d += chunk_size;
     }
+    if (result_code || !found_terminator) {
+      result_code = result_code ? result_code : 1;
+      break;
+    }
 
     p = pnext;
+    input_offset += block_size;
     cur_block = next_block;
   }
 
