@@ -250,6 +250,12 @@ std::vector<Function*> Processor::FindFunctionsWithAddress(uint32_t address) {
 }
 
 void Processor::RemoveFunctionByAddress(uint32_t address) {
+  if (auto* entry = entry_table_.Get(address); entry != nullptr &&
+                                               entry->function != nullptr &&
+                                               entry->function->is_guest()) {
+    auto* guest_function = static_cast<GuestFunction*>(entry->function);
+    guest_function->Invalidate();
+  }
   entry_table_.Delete(address);
 }
 

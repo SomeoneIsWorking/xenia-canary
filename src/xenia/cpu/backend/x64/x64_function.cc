@@ -30,6 +30,12 @@ void X64Function::Setup(uint8_t* machine_code, size_t machine_code_length) {
   machine_code_length_ = machine_code_length;
 }
 
+void X64Function::Invalidate() {
+  GuestFunction::Invalidate();
+  machine_code_ = nullptr;
+  machine_code_length_ = 0;
+}
+
 bool X64Function::CallImpl(ThreadState* thread_state, uint32_t return_address) {
   auto backend =
       reinterpret_cast<X64Backend*>(thread_state->processor()->backend());
