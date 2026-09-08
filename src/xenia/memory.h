@@ -507,6 +507,17 @@ class Memory {
       uint32_t physical_address, uint32_t length,
       bool enable_invalidation_notifications, bool enable_data_providers);
 
+  // Invalidates translated or host-side state for writes to a virtual-memory
+  // range that is not backed by the physical-memory alias views.
+  typedef void (*VirtualMemoryInvalidationCallback)(
+      void* context_ptr, uint32_t virtual_address_start, uint32_t length);
+  void* RegisterVirtualMemoryInvalidationCallback(
+      VirtualMemoryInvalidationCallback callback, void* callback_context);
+  void UnregisterVirtualMemoryInvalidationCallback(void* callback_handle);
+  bool EnableVirtualMemoryAccessCallbacks(void* callback_handle,
+                                          uint32_t virtual_address,
+                                          uint32_t length);
+
   // Forces triggering of watch callbacks for a virtual address range if pages
   // are watched there and unwatching them. Returns whether any page was
   // watched. Must be called with global critical region locking depth of 1.
@@ -613,6 +624,13 @@ class Memory {
   xe::global_critical_region global_critical_region_;
   std::vector<std::pair<PhysicalMemoryInvalidationCallback, void*>*>
       physical_memory_invalidation_callbacks_;
+  struct VirtualMemoryInvalidationCallbackEntry {
+    VirtualMemoryInvalidationCallback callback;
+    void* context;
+    std::vector<std::pair<uint32_t, uint32_t>> ranges;
+  };
+  std::vector<VirtualMemoryInvalidationCallbackEntry*>
+      virtual_memory_invalidation_callbacks_;
 };
 
 }  // namespace xe

@@ -164,6 +164,9 @@ Memory::~Memory() {
   for (auto invalidation_callback : physical_memory_invalidation_callbacks_) {
     delete invalidation_callback;
   }
+  for (auto invalidation_callback : virtual_memory_invalidation_callbacks_) {
+    delete invalidation_callback;
+  }
 
   heaps_.v00000000.Dispose();
   heaps_.v40000000.Dispose();
@@ -613,7 +616,29 @@ bool Memory::AccessViolationCallback(
   uint32_t virtual_address = HostToGuestVirtual(host_address);
   BaseHeap* heap = LookupHeap(virtual_address);
   if (heap->heap_type() != HeapType::kGuestPhysical) {
-    return false;
+    if (!is_write) {
+      return false;
+    }
+    const uint32_t page_size = heap->page_size();
+    const uint32_t page_address = virtual_address & ~(page_size - 1);
+    const uint64_t page_end = static_cast<uint64_t>(page_address) + page_size;
+    bool watched = false;
+    for (auto* callback : virtual_memory_invalidation_callbacks_) {
+      for (const auto& [range_address, range_length] : callback->ranges) {
+        const uint64_t range_end =
+            static_cast<uint64_t>(range_address) + range_length;
+        if (page_address < range_end && page_end > range_address) {
+          callback->callback(callback->context, page_address, page_size);
+          watched = true;
+          break;
+        }
+      }
+    }
+    if (!watched || !heap->Protect(page_address, page_size,
+                                   kMemoryProtectRead | kMemoryProtectWrite)) {
+      return false;
+    }
+    return true;
   }
 
   // Access violation callbacks from the guest are triggered when the global
@@ -653,6 +678,74 @@ void* Memory::RegisterPhysicalMemoryInvalidationCallback(
   auto lock = global_critical_region_.Acquire();
   physical_memory_invalidation_callbacks_.push_back(entry);
   return entry;
+}
+
+void* Memory::RegisterVirtualMemoryInvalidationCallback(
+    VirtualMemoryInvalidationCallback callback, void* callback_context) {
+  auto entry = new VirtualMemoryInvalidationCallbackEntry{
+      callback, callback_context, {}};
+  auto lock = global_critical_region_.Acquire();
+  virtual_memory_invalidation_callbacks_.push_back(entry);
+  return entry;
+}
+
+void Memory::UnregisterVirtualMemoryInvalidationCallback(
+    void* callback_handle) {
+  auto* entry = reinterpret_cast<VirtualMemoryInvalidationCallbackEntry*>(
+      callback_handle);
+  {
+    auto lock = global_critical_region_.Acquire();
+    auto it = std::find(virtual_memory_invalidation_callbacks_.begin(),
+                        virtual_memory_invalidation_callbacks_.end(), entry);
+    assert_true(it != virtual_memory_invalidation_callbacks_.end());
+    if (it != virtual_memory_invalidation_callbacks_.end()) {
+      virtual_memory_invalidation_callbacks_.erase(it);
+    }
+  }
+  delete entry;
+}
+
+bool Memory::EnableVirtualMemoryAccessCallbacks(void* callback_handle,
+                                                uint32_t virtual_address,
+                                                uint32_t length) {
+  if (length == 0 || virtual_address + length < virtual_address) {
+    return false;
+  }
+  auto* entry = reinterpret_cast<VirtualMemoryInvalidationCallbackEntry*>(
+      callback_handle);
+  auto lock = global_critical_region_.Acquire();
+  if (std::find(virtual_memory_invalidation_callbacks_.begin(),
+                virtual_memory_invalidation_callbacks_.end(),
+                entry) == virtual_memory_invalidation_callbacks_.end()) {
+    return false;
+  }
+  BaseHeap* heap = LookupHeap(virtual_address);
+  if (heap == nullptr || heap->heap_type() == HeapType::kGuestPhysical) {
+    return false;
+  }
+  const uint32_t page_size = heap->page_size();
+  const uint32_t page_address = virtual_address & ~(page_size - 1);
+  const uint64_t requested_end =
+      static_cast<uint64_t>(virtual_address) + length;
+  const uint64_t heap_end =
+      static_cast<uint64_t>(heap->heap_base()) + heap->heap_size();
+  const uint64_t page_end =
+      (requested_end + page_size - 1) & ~(static_cast<uint64_t>(page_size) - 1);
+  if (page_end > heap_end || page_end > static_cast<uint64_t>(UINT32_MAX) + 1) {
+    return false;
+  }
+  if (!heap->Protect(page_address,
+                     static_cast<uint32_t>(page_end - page_address),
+                     kMemoryProtectRead)) {
+    return false;
+  }
+  const std::pair<uint32_t, uint32_t> range{
+      page_address, static_cast<uint32_t>(page_end - page_address)};
+  if (std::find(entry->ranges.begin(), entry->ranges.end(), range) ==
+      entry->ranges.end()) {
+    entry->ranges.push_back(range);
+  }
+  return true;
 }
 
 void Memory::UnregisterPhysicalMemoryInvalidationCallback(

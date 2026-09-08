@@ -33,6 +33,7 @@ class A64Function : public GuestFunction {
   }
 
   void Setup(uint8_t* machine_code, size_t machine_code_length);
+  void Invalidate() override;
 
  protected:
   bool CallImpl(ThreadState* thread_state, uint32_t return_address) override;

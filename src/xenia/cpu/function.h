@@ -125,6 +125,7 @@ class GuestFunction : public Function {
 
   virtual uint8_t* machine_code() const = 0;
   virtual size_t machine_code_length() const = 0;
+  virtual void Invalidate();
 
   FunctionDebugInfo* debug_info() const { return debug_info_.get(); }
   void set_debug_info(std::unique_ptr<FunctionDebugInfo> debug_info) {

@@ -60,6 +60,12 @@ GuestFunction::GuestFunction(Module* module, uint32_t address)
 
 GuestFunction::~GuestFunction() = default;
 
+void GuestFunction::Invalidate() {
+  set_status(Symbol::Status::kDeclared);
+  debug_info_.reset();
+  source_map_.clear();
+}
+
 void GuestFunction::SetupExtern(ExternHandler handler, Export* export_data,
                                 void* handler_context) {
   behavior_ = Behavior::kExtern;

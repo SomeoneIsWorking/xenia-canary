@@ -30,6 +30,12 @@ void A64Function::Setup(uint8_t* machine_code, size_t machine_code_length) {
   machine_code_.store(machine_code, std::memory_order_release);
 }
 
+void A64Function::Invalidate() {
+  GuestFunction::Invalidate();
+  machine_code_length_.store(0, std::memory_order_relaxed);
+  machine_code_.store(nullptr, std::memory_order_release);
+}
+
 bool A64Function::CallImpl(ThreadState* thread_state, uint32_t return_address) {
   auto backend =
       reinterpret_cast<A64Backend*>(thread_state->processor()->backend());
