@@ -114,6 +114,13 @@ class Processor {
   std::vector<Function*> FindFunctionsWithAddress(uint32_t address);
   void RemoveFunctionByAddress(uint32_t address);
 
+  // Replace only guest-to-guest calls to this address; host callers may still
+  // resolve and enter the original translated body directly.
+  bool InstallGuestCallRedirect(uint32_t address,
+                                backend::GuestTrampolineProc callback,
+                                void* userdata1, void* userdata2);
+  bool RemoveGuestCallRedirect(uint32_t address);
+
   Function* LookupFunction(uint32_t address);
   Module* LookupModule(uint32_t address);
   Function* LookupFunction(Module* module, uint32_t address);
@@ -266,6 +273,11 @@ class Processor {
   ExportResolver* export_resolver_ = nullptr;
 
   EntryTable entry_table_;
+  struct GuestCallRedirect {
+    uint32_t trampoline_address = 0;
+    uint32_t host_address = 0;
+  };
+  std::map<uint32_t, GuestCallRedirect> guest_call_redirects_;
   xe::global_critical_region global_critical_region_;
   ExecutionState execution_state_ = ExecutionState::kPaused;
   std::vector<std::unique_ptr<Module>> modules_;

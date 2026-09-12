@@ -39,6 +39,12 @@ class CodeCache {
   // Return an invalidated guest entry to the backend's resolve thunk. Cached
   // guest callers must not keep executing an obsolete translated callee.
   virtual void InvalidateGuestEntry(uint32_t guest_address) = 0;
+
+  // Redirect a guest-address call slot without changing its translated body.
+  // Guest-to-guest direct and indirect calls both read this slot.
+  virtual uint32_t LookupGuestEntry(uint32_t guest_address) const = 0;
+  virtual bool RedirectGuestEntry(uint32_t guest_address,
+                                  uint32_t host_address) = 0;
 };
 
 }  // namespace backend
