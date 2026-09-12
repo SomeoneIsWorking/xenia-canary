@@ -29,9 +29,9 @@
 #include "xenia/cpu/processor.h"
 #include "xenia/cpu/xex_module.h"
 DEFINE_bool(
-    break_on_unimplemented_instructions, true,
-    "Break to the host debugger (or crash if no debugger attached) if an "
-    "unimplemented PowerPC instruction is encountered.",
+    break_on_unimplemented_instructions, false,
+    "Break to the host debugger on an unimplemented PowerPC instruction "
+    "before refusing translation.",
     "CPU");
 
 namespace xe {
@@ -159,9 +159,10 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
 
     if (opcode == PPCOpcode::kInvalid) {
       XELOGE("Invalid instruction {:08X} {:08X}", address, code);
-      Comment("INVALID!");
-      // TraceInvalidInstruction(i);
-      continue;
+      if (cvars::break_on_unimplemented_instructions) {
+        DebugBreak();
+      }
+      return false;
     }
     ++opcode_translation_counts[static_cast<int>(opcode)];
 
@@ -179,16 +180,18 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
     i.code = code;
     i.opcode = opcode;
     i.opcode_info = &opcode_info;
-    if (!opcode_info.emit || opcode_info.emit(*this, i)) {
+    instruction_unimplemented_ = false;
+    const bool emitted = opcode_info.emit && !opcode_info.emit(*this, i);
+    if (!emitted || instruction_unimplemented_) {
       auto& disasm_info = GetOpcodeDisasmInfo(opcode);
       XELOGE(
           "Unimplemented instr {:08X} {:08X} {} - report the game to Xenia "
-          "developers; to skip, disable break_on_unimplemented_instructions",
+          "developers",
           address, code, disasm_info.name);
-      Comment("UNIMPLEMENTED!");
       if (cvars::break_on_unimplemented_instructions) {
         DebugBreak();
       }
+      return false;
     }
   }
 
