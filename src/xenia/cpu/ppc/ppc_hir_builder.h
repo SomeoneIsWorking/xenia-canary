@@ -39,6 +39,7 @@ class PPCHIRBuilder : public hir::HIRBuilder {
     EMIT_DEBUG_COMMENTS = 1 << 0,
   };
   bool Emit(GuestFunction* function, uint32_t flags);
+  void MarkInstructionUnimplemented() { instruction_unimplemented_ = true; }
 
   GuestFunction* function() const { return function_; }
   Function* LookupFunction(uint32_t address);
@@ -102,6 +103,7 @@ class PPCHIRBuilder : public hir::HIRBuilder {
   Label** label_list_;
 
   // Reset each instruction.
+  bool instruction_unimplemented_ = false;
   struct {
     uint32_t dest_count;
     struct {
