@@ -251,6 +251,7 @@ enum class GuestExecutionExitReason : uint32_t {
   kBlockBudgetExceeded = 1,
   kExecutableWriteObserved = 2,
   kHostServiceRefused = 3,
+  kNativeOverrideFailed = 4,
 };
 
 // Host-owned execution limit shared by all translated guest functions entered

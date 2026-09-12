@@ -128,6 +128,24 @@ class CodeCacheBase : public CodeCache {
     AddIndirection(guest_address, indirection_default_value_);
   }
 
+  uint32_t LookupGuestEntry(uint32_t guest_address) const override {
+    if (!indirection_table_base_) {
+      return 0;
+    }
+    auto* slot = reinterpret_cast<const uint32_t*>(
+        indirection_table_base_ + (guest_address - kIndirectionTableBase));
+    return *slot;
+  }
+
+  bool RedirectGuestEntry(uint32_t guest_address,
+                          uint32_t host_address) override {
+    if (!indirection_table_base_ || !host_address) {
+      return false;
+    }
+    AddIndirection(guest_address, host_address);
+    return true;
+  }
+
   void CommitExecutableRange(uint32_t guest_low, uint32_t guest_high) {
     if (!indirection_table_base_) {
       return;

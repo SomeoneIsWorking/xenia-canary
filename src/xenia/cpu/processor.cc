@@ -91,6 +91,10 @@ Processor::Processor(xe::Memory* memory, ExportResolver* export_resolver)
     : memory_(memory), export_resolver_(export_resolver) {}
 
 Processor::~Processor() {
+  for (const auto& [address, redirect] : guest_call_redirects_) {
+    backend_->FreeGuestTrampoline(redirect.trampoline_address);
+  }
+  guest_call_redirects_.clear();
   {
     auto global_lock = global_critical_region_.Acquire();
     modules_.clear();
@@ -193,6 +197,12 @@ void Processor::RemoveModule(const std::string_view name) {
     const std::vector<uint32_t> addressed_functions =
         (*itr)->GetAddressedFunctions();
 
+    for (const uint32_t entry : addressed_functions) {
+      if (guest_call_redirects_.contains(entry)) {
+        RemoveGuestCallRedirect(entry);
+      }
+    }
+
     modules_.erase(itr);
 
     for (const uint32_t entry : addressed_functions) {
@@ -256,9 +266,58 @@ void Processor::RemoveFunctionByAddress(uint32_t address) {
                                                entry->function->is_guest()) {
     auto* guest_function = static_cast<GuestFunction*>(entry->function);
     guest_function->Invalidate();
-    backend_->code_cache()->InvalidateGuestEntry(address);
+    if (!guest_call_redirects_.contains(address)) {
+      backend_->code_cache()->InvalidateGuestEntry(address);
+    }
   }
   entry_table_.Delete(address);
+}
+
+bool Processor::InstallGuestCallRedirect(uint32_t address,
+                                         backend::GuestTrampolineProc callback,
+                                         void* userdata1, void* userdata2) {
+  if (!callback || guest_call_redirects_.contains(address)) {
+    return false;
+  }
+  auto* original = dynamic_cast<GuestFunction*>(ResolveFunction(address));
+  if (!original || !original->machine_code()) {
+    return false;
+  }
+  const uint32_t trampoline_address =
+      backend_->CreateGuestTrampoline(callback, userdata1, userdata2, true);
+  if (!trampoline_address) {
+    return false;
+  }
+  auto* cache = backend_->code_cache();
+  const uint32_t host_address = cache->LookupGuestEntry(trampoline_address);
+  if (!cache->RedirectGuestEntry(address, host_address)) {
+    backend_->FreeGuestTrampoline(trampoline_address);
+    return false;
+  }
+  guest_call_redirects_.emplace(
+      address, GuestCallRedirect{trampoline_address, host_address});
+  return true;
+}
+
+bool Processor::RemoveGuestCallRedirect(uint32_t address) {
+  auto redirect = guest_call_redirects_.find(address);
+  if (redirect == guest_call_redirects_.end()) {
+    return false;
+  }
+  auto* cache = backend_->code_cache();
+  auto* original = dynamic_cast<GuestFunction*>(QueryFunction(address));
+  if (original && original->machine_code()) {
+    const auto host_address = static_cast<uint32_t>(
+        reinterpret_cast<uintptr_t>(original->machine_code()));
+    if (!cache->RedirectGuestEntry(address, host_address)) {
+      return false;
+    }
+  } else {
+    cache->InvalidateGuestEntry(address);
+  }
+  backend_->FreeGuestTrampoline(redirect->second.trampoline_address);
+  guest_call_redirects_.erase(redirect);
+  return true;
 }
 
 Function* Processor::ResolveFunction(uint32_t address) {
@@ -293,6 +352,11 @@ Function* Processor::ResolveFunction(uint32_t address) {
     entry->function = function;
     entry->end_address = function->end_address();
     status = entry->status = Entry::STATUS_READY;
+    if (const auto redirect = guest_call_redirects_.find(address);
+        redirect != guest_call_redirects_.end()) {
+      backend_->code_cache()->RedirectGuestEntry(address,
+                                                 redirect->second.host_address);
+    }
   }
   if (status == Entry::STATUS_READY) {
     // Ready to use.
