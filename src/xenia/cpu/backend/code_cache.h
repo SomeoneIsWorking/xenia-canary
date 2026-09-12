@@ -35,6 +35,10 @@ class CodeCache {
 
   // Finds platform-specific function unwind info for the given host PC.
   virtual void* LookupUnwindInfo(uint64_t host_pc) = 0;
+
+  // Return an invalidated guest entry to the backend's resolve thunk. Cached
+  // guest callers must not keep executing an obsolete translated callee.
+  virtual void InvalidateGuestEntry(uint32_t guest_address) = 0;
 };
 
 }  // namespace backend

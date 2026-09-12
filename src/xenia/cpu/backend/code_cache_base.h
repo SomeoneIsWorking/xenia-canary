@@ -124,6 +124,10 @@ class CodeCacheBase : public CodeCache {
     *indirection_slot = host_address;
   }
 
+  void InvalidateGuestEntry(uint32_t guest_address) override {
+    AddIndirection(guest_address, indirection_default_value_);
+  }
+
   void CommitExecutableRange(uint32_t guest_low, uint32_t guest_high) {
     if (!indirection_table_base_) {
       return;
