@@ -249,6 +249,7 @@ enum class PPCRegister {
 enum class GuestExecutionExitReason : uint32_t {
   kNone = 0,
   kBlockBudgetExceeded = 1,
+  kExecutableWriteObserved = 2,
 };
 
 // Host-owned execution limit shared by all translated guest functions entered

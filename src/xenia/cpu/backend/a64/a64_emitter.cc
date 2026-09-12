@@ -226,6 +226,10 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
                hir::GetOpcodeName(instr->GetOpcodeInfo()));
         return false;
       }
+      const uint32_t opcode = instr->GetOpcodeNum();
+      if (opcode == hir::OPCODE_STORE || opcode == hir::OPCODE_STORE_OFFSET) {
+        EmitExecutionBudgetExitCheck();
+      }
       instr = new_tail;
     }
 
