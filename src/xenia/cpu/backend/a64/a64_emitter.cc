@@ -380,33 +380,7 @@ void A64Emitter::UnimplementedInstr(const hir::Instr* i) {
 void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   assert_not_null(function);
   ForgetFpcrMode();
-  auto fn = static_cast<A64Function*>(function);
-
-  if (fn->machine_code()) {
-    // Direct call — function is already compiled.
-    mov(x9, reinterpret_cast<uint64_t>(fn->machine_code()));
-    if (!(instr->flags & hir::CALL_TAIL)) {
-      // Pass the next call's guest return address in x0.
-      ldr(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
-      blr(x9);
-      EmitExecutionBudgetExitCheck();
-      synchronize_stack_on_next_instruction_ = true;
-    } else {
-      // Tail call: pass our return address to the callee.
-      PopStackpoint();
-      ldr(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_RET_ADDR)));
-      ldr(x30, ptr(sp, static_cast<uint32_t>(StackLayout::HOST_RET_ADDR)));
-      if (stack_size() <= 4095) {
-        add(sp, sp, static_cast<uint32_t>(stack_size()));
-      } else {
-        mov(x17, static_cast<uint64_t>(stack_size()));
-        add(sp, sp, x17, UXTX);
-      }
-      br(x9);
-    }
-    return;
-  }
-
+  // Cached callers must observe callee invalidation through this slot.
   if (code_cache_->has_indirection_table()) {
     // Load host code address from indirection table.
     mov(w16, function->address());

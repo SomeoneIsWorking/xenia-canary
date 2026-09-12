@@ -729,30 +729,10 @@ uint64_t ResolveFunction(void* raw_context, uint64_t target_address) {
 void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   assert_not_null(function);
   ForgetMxcsrMode();
-  auto fn = static_cast<X64Function*>(function);
   // Resolve address to the function to call and store in rax.
-
-  if (fn->machine_code()) {
-    if (!(instr->flags & hir::CALL_TAIL)) {
-      mov(rcx, qword[rsp + StackLayout::GUEST_CALL_RET_ADDR]);
-
-      call((void*)fn->machine_code());
-      EmitExecutionBudgetExitCheck();
-      synchronize_stack_on_next_instruction_ = true;
-    } else {
-      // tail call
-      EmitTraceUserCallReturn();
-      EmitProfilerEpilogue();
-      // Pass the callers return address over.
-      mov(rcx, qword[rsp + StackLayout::GUEST_RET_ADDR]);
-
-      add(rsp, static_cast<uint32_t>(stack_size()));
-      PopStackpoint();
-      jmp((void*)fn->machine_code(), T_NEAR);
-    }
-
-    return;
-  } else if (code_cache_->has_indirection_table()) {
+  // Always use the guest-address slot: a direct host pointer would outlive a
+  // callee invalidation and bypass the newly translated body.
+  if (code_cache_->has_indirection_table()) {
     // Load the pointer to the indirection table maintained in X64CodeCache.
     // The target dword will either contain the address of the generated code
     // or a thunk to ResolveAddress.

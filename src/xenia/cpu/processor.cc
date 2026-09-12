@@ -22,6 +22,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
+#include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/breakpoint.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/export_resolver.h"
@@ -255,6 +256,7 @@ void Processor::RemoveFunctionByAddress(uint32_t address) {
                                                entry->function->is_guest()) {
     auto* guest_function = static_cast<GuestFunction*>(entry->function);
     guest_function->Invalidate();
+    backend_->code_cache()->InvalidateGuestEntry(address);
   }
   entry_table_.Delete(address);
 }
