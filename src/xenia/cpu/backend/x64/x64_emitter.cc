@@ -306,6 +306,10 @@ bool X64Emitter::Emit(HIRBuilder* builder, EmitFunctionInfo& func_info) {
         XELOGE("Unable to process HIR opcode {}", GetOpcodeName(instr->opcode));
         break;
       }
+      const uint32_t opcode = instr->GetOpcodeNum();
+      if (opcode == hir::OPCODE_STORE || opcode == hir::OPCODE_STORE_OFFSET) {
+        EmitExecutionBudgetExitCheck();
+      }
       instr = new_tail;
     }
 
