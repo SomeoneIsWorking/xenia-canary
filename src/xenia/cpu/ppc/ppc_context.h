@@ -246,6 +246,20 @@ enum class PPCRegister {
   kCR,
 };
 
+enum class GuestExecutionExitReason : uint32_t {
+  kNone = 0,
+  kBlockBudgetExceeded = 1,
+};
+
+// Host-owned execution limit shared by all translated guest functions entered
+// on one PPCContext. The dynarec decrements remaining_blocks at every emitted
+// basic-block entry and propagates an exhausted result across guest calls.
+struct GuestExecutionBudget {
+  uint64_t remaining_blocks = 0;
+  GuestExecutionExitReason exit_reason = GuestExecutionExitReason::kNone;
+  uint32_t reserved = 0;
+};
+
 #pragma pack(push, 8)
 typedef struct alignas(64) PPCContext_s {
   union {
@@ -429,6 +443,7 @@ typedef struct alignas(64) PPCContext_s {
   uint64_t reserved_val;
   ThreadState* thread_state;
   uint8_t* virtual_membase;
+  GuestExecutionBudget* execution_budget;
 
   template <typename T = uint8_t*>
   inline T TranslateVirtual(uint32_t guest_address) XE_RESTRICT const {

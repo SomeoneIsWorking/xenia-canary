@@ -110,6 +110,8 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   size_t stack_size() const { return stack_size_; }
 
   void MarkSourceOffset(const hir::Instr* i);
+  void EmitExecutionBudgetCheck();
+  void EmitExecutionBudgetExitCheck();
 
   void DebugBreak();
   void Trap(uint16_t trap_type = 0);
