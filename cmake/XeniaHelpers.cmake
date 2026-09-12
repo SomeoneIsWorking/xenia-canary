@@ -27,7 +27,7 @@ function(xe_platform_sources target base_path)
   endif()
 
   # Glob all source files
-  file(${glob_mode} _all_sources    "${base_path}/*.h"
+  file(${glob_mode} _all_sources CONFIGURE_DEPENDS    "${base_path}/*.h"
     "${base_path}/*.cc"
     "${base_path}/*.cpp"
     "${base_path}/*.c"
@@ -60,11 +60,11 @@ function(xe_platform_sources target base_path)
 
   # Add back platform-specific files
   if(WIN32)
-    file(${glob_mode} _plat_sources      "${base_path}/*_win.h"
+    file(${glob_mode} _plat_sources CONFIGURE_DEPENDS      "${base_path}/*_win.h"
       "${base_path}/*_win.cc"
     )
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    file(${glob_mode} _plat_sources      "${base_path}/*_posix.h"
+    file(${glob_mode} _plat_sources CONFIGURE_DEPENDS      "${base_path}/*_posix.h"
       "${base_path}/*_posix.cc"
       "${base_path}/*_linux.h"
       "${base_path}/*_linux.cc"
@@ -81,10 +81,10 @@ function(xe_platform_sources target base_path)
 
   # Add back architecture-specific files
   if(XE_TARGET_X86_64)
-    file(${glob_mode} _arch_sources "${base_path}/*_amd64.h" "${base_path}/*_amd64.cc"
+    file(${glob_mode} _arch_sources CONFIGURE_DEPENDS "${base_path}/*_amd64.h" "${base_path}/*_amd64.cc"
       "${base_path}/*_x64.h" "${base_path}/*_x64.cc")
   elseif(XE_TARGET_AARCH64)
-    file(${glob_mode} _arch_sources "${base_path}/*_arm64.h" "${base_path}/*_arm64.cc")
+    file(${glob_mode} _arch_sources CONFIGURE_DEPENDS "${base_path}/*_arm64.h" "${base_path}/*_arm64.cc")
   endif()
   if(_arch_sources)
     list(APPEND _sources ${_arch_sources})

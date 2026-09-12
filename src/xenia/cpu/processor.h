@@ -25,6 +25,7 @@
 #include "xenia/cpu/function.h"
 #include "xenia/cpu/module.h"
 #include "xenia/cpu/ppc/ppc_frontend.h"
+#include "xenia/cpu/ppc/ppc_interpreter.h"
 #include "xenia/cpu/thread_debug_info.h"
 #include "xenia/cpu/thread_state.h"
 #include "xenia/memory.h"
@@ -125,6 +126,10 @@ class Processor {
   Module* LookupModule(uint32_t address);
   Function* LookupFunction(Module* module, uint32_t address);
   Function* ResolveFunction(uint32_t address);
+
+  ppc::PPCInterpreterResult ExecuteInterpreter(ThreadState* thread_state,
+                                               uint32_t address,
+                                               uint64_t max_instructions);
 
   bool Execute(ThreadState* thread_state, uint32_t address);
   bool ExecuteRaw(ThreadState* thread_state, uint32_t address);

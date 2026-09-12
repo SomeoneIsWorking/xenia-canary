@@ -366,6 +366,15 @@ Function* Processor::ResolveFunction(uint32_t address) {
     return nullptr;
   }
 }
+
+ppc::PPCInterpreterResult Processor::ExecuteInterpreter(
+    ThreadState* thread_state, uint32_t address, uint64_t max_instructions) {
+  auto* function = dynamic_cast<GuestFunction*>(LookupFunction(address));
+  if (function == nullptr) {
+    return {ppc::PPCInterpreterExitReason::kInvalidEntry, address, 0, 0};
+  }
+  return ppc::ExecutePPCInterpreter(*function, *thread_state, max_instructions);
+}
 Module* Processor::LookupModule(uint32_t address) {
   auto global_lock = global_critical_region_.Acquire();
   // TODO(benvanik): sort by code address (if contiguous) so can bsearch.
