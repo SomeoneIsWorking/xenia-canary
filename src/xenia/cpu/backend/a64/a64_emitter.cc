@@ -204,6 +204,8 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
       label = label->next;
     }
 
+    EmitExecutionBudgetCheck();
+
     // Process each instruction in the block.
     const hir::Instr* instr = block->instr_head;
     while (instr) {
@@ -320,6 +322,47 @@ void A64Emitter::MarkSourceOffset(const hir::Instr* i) {
   entry->code_offset = static_cast<uint32_t>(getSize());
 }
 
+void A64Emitter::EmitExecutionBudgetCheck() {
+  auto& no_budget = NewCachedLabel();
+  auto& exhausted = NewCachedLabel();
+  auto& done = NewCachedLabel();
+
+  ldr(x0, ptr(GetContextReg(), static_cast<uint32_t>(offsetof(
+                                   ppc::PPCContext, execution_budget))));
+  cbz(x0, no_budget);
+  ldr(x1, ptr(x0, static_cast<uint32_t>(
+                      offsetof(ppc::GuestExecutionBudget, remaining_blocks))));
+  cbz(x1, exhausted);
+  sub(x1, x1, 1);
+  str(x1, ptr(x0, static_cast<uint32_t>(
+                      offsetof(ppc::GuestExecutionBudget, remaining_blocks))));
+  b(done);
+
+  L(exhausted);
+  mov(w1, static_cast<uint32_t>(
+              ppc::GuestExecutionExitReason::kBlockBudgetExceeded));
+  str(w1, ptr(x0, static_cast<uint32_t>(
+                      offsetof(ppc::GuestExecutionBudget, exit_reason))));
+  b(epilog_label());
+
+  L(no_budget);
+  L(done);
+}
+
+void A64Emitter::EmitExecutionBudgetExitCheck() {
+  auto& done = NewCachedLabel();
+
+  ldr(x0, ptr(GetContextReg(), static_cast<uint32_t>(offsetof(
+                                   ppc::PPCContext, execution_budget))));
+  cbz(x0, done);
+  ldr(w1, ptr(x0, static_cast<uint32_t>(
+                      offsetof(ppc::GuestExecutionBudget, exit_reason))));
+  cbz(w1, done);
+  b(epilog_label());
+
+  L(done);
+}
+
 void A64Emitter::DebugBreak() { brk(0xF000); }
 
 void A64Emitter::Trap(uint16_t trap_type) { brk(trap_type); }
@@ -342,6 +385,7 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
       // Pass the next call's guest return address in x0.
       ldr(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
       blr(x9);
+      EmitExecutionBudgetExitCheck();
       synchronize_stack_on_next_instruction_ = true;
     } else {
       // Tail call: pass our return address to the callee.
@@ -386,6 +430,7 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   } else {
     ldr(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
     blr(x9);
+    EmitExecutionBudgetExitCheck();
     synchronize_stack_on_next_instruction_ = true;
   }
 }

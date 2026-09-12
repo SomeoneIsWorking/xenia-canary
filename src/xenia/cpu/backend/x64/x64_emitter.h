@@ -254,6 +254,8 @@ class X64Emitter : public Xbyak::CodeGenerator {
   Xbyak::Label& epilog_label() { return *epilog_label_; }
 
   void MarkSourceOffset(const hir::Instr* i);
+  void EmitExecutionBudgetCheck();
+  void EmitExecutionBudgetExitCheck();
 
   void DebugBreak();
   void Trap(uint16_t trap_type = 0);

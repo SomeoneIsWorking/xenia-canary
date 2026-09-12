@@ -283,6 +283,8 @@ bool X64Emitter::Emit(HIRBuilder* builder, EmitFunctionInfo& func_info) {
       label = label->next;
     }
 
+    EmitExecutionBudgetCheck();
+
     if (cvars::align_all_basic_blocks) {
       align(cvars::align_all_basic_blocks, true);
     }
@@ -391,6 +393,45 @@ void X64Emitter::MarkSourceOffset(const Instr* i) {
     inc(qword[low_address(trace_data_->instruction_execute_counts() +
                           instruction_index * 8)]);
   }
+}
+
+void X64Emitter::EmitExecutionBudgetCheck() {
+  Xbyak::Label no_budget;
+  Xbyak::Label exhausted;
+  Xbyak::Label done;
+
+  mov(rax,
+      qword[GetContextReg() + offsetof(ppc::PPCContext, execution_budget)]);
+  test(rax, rax);
+  jz(no_budget, CodeGenerator::T_NEAR);
+  cmp(qword[rax + offsetof(ppc::GuestExecutionBudget, remaining_blocks)], 0);
+  jz(exhausted, CodeGenerator::T_NEAR);
+  dec(qword[rax + offsetof(ppc::GuestExecutionBudget, remaining_blocks)]);
+  jmp(done, CodeGenerator::T_NEAR);
+
+  L(exhausted);
+  mov(dword[rax + offsetof(ppc::GuestExecutionBudget, exit_reason)],
+      static_cast<uint32_t>(
+          ppc::GuestExecutionExitReason::kBlockBudgetExceeded));
+  jmp(epilog_label(), CodeGenerator::T_NEAR);
+
+  L(no_budget);
+  L(done);
+}
+
+void X64Emitter::EmitExecutionBudgetExitCheck() {
+  Xbyak::Label done;
+
+  mov(rax,
+      qword[GetContextReg() + offsetof(ppc::PPCContext, execution_budget)]);
+  test(rax, rax);
+  jz(done, CodeGenerator::T_NEAR);
+  cmp(dword[rax + offsetof(ppc::GuestExecutionBudget, exit_reason)],
+      static_cast<uint32_t>(ppc::GuestExecutionExitReason::kNone));
+  je(done, CodeGenerator::T_NEAR);
+  jmp(epilog_label(), CodeGenerator::T_NEAR);
+
+  L(done);
 }
 
 void X64Emitter::EmitGetCurrentThreadId() {
@@ -692,6 +733,7 @@ void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
       mov(rcx, qword[rsp + StackLayout::GUEST_CALL_RET_ADDR]);
 
       call((void*)fn->machine_code());
+      EmitExecutionBudgetExitCheck();
       synchronize_stack_on_next_instruction_ = true;
     } else {
       // tail call
@@ -735,6 +777,7 @@ void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
     mov(rcx, qword[rsp + StackLayout::GUEST_CALL_RET_ADDR]);
 
     call(rax);
+    EmitExecutionBudgetExitCheck();
     synchronize_stack_on_next_instruction_ = true;
   }
 }
@@ -781,6 +824,7 @@ void X64Emitter::CallIndirect(const hir::Instr* instr,
     mov(rcx, qword[rsp + StackLayout::GUEST_CALL_RET_ADDR]);
 
     call(rax);
+    EmitExecutionBudgetExitCheck();
     synchronize_stack_on_next_instruction_ = true;
   }
 }
