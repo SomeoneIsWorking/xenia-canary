@@ -88,7 +88,13 @@ inline int futex_wake(std::atomic<uint32_t>* addr, int count) {
                  0);
 }
 
-inline pid_t gettid() { return static_cast<pid_t>(syscall(SYS_gettid)); }
+// The recursive mutex identifies its owner on every acquire. A thread's id is
+// fixed for its lifetime, so it is read from the kernel once per thread rather
+// than as a syscall per lock.
+inline pid_t gettid() {
+  thread_local const pid_t tid = static_cast<pid_t>(syscall(SYS_gettid));
+  return tid;
+}
 
 }  // namespace
 

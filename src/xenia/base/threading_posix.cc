@@ -140,7 +140,8 @@ void EnableAffinityConfiguration() {}
 // uint64_t ticks() { return mach_absolute_time(); }
 
 uint32_t current_thread_system_id() {
-  return static_cast<uint32_t>(syscall(SYS_gettid));
+  thread_local const uint32_t tid = static_cast<uint32_t>(syscall(SYS_gettid));
+  return tid;
 }
 
 void MaybeYield() {
