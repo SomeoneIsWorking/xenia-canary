@@ -252,6 +252,7 @@ enum class GuestExecutionExitReason : uint32_t {
   kExecutableWriteObserved = 2,
   kHostServiceRefused = 3,
   kNativeOverrideFailed = 4,
+  kGuestAccessViolation = 5,
 };
 
 // Host-owned execution limit shared by all translated guest functions entered
@@ -261,6 +262,12 @@ struct GuestExecutionBudget {
   uint64_t remaining_blocks = 0;
   GuestExecutionExitReason exit_reason = GuestExecutionExitReason::kNone;
   uint32_t reserved = 0;
+  // Guest address of the access that faulted, valid only when exit_reason is
+  // kGuestAccessViolation. The budget cannot bound a faulting instruction: it
+  // is decremented at translated-block entry, and an instruction that faults
+  // repeatedly never reaches another block boundary.
+  uint32_t fault_guest_address = 0;
+  bool fault_was_write = false;
 };
 
 #pragma pack(push, 8)
