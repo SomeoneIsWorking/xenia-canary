@@ -329,6 +329,23 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // The per-frame counts are a multiset and cannot see an arrangement.
   std::FILE* gears_draw_order_ = nullptr;
   uint32_t gears_draw_order_index_ = 0;
+  // What the last reported swap presented; IssueSwap reports a swap only when
+  // this changes.
+  struct GearsSwapReport {
+    uint32_t frontbuffer_width = 0;
+    uint32_t frontbuffer_height = 0;
+    uint32_t texture_width = 0;
+    uint32_t texture_height = 0;
+    uint32_t format = UINT32_MAX;
+    bool pwl_ramp = false;
+    uint32_t ramp_entries = 0;
+    uint32_t ramp_nonzero = 0;
+    std::array<uint32_t, 3> ramp_first{};
+    uint32_t ramp_last = 0;
+    bool operator==(const GearsSwapReport&) const = default;
+  };
+  GearsSwapReport gears_last_swap_report_;
+  uint64_t gears_swap_count_ = 0;
   // GEARS_ORACLE_REG_WATCH target, read once at setup; zero disables it.
   // While a register is watched, ranges are written a register at a time
   // so the watch sees every write.
