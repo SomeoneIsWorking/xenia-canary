@@ -83,6 +83,11 @@ bool VulkanPipelineCache::Initialize() {
   if (!gears_shader_override_.Initialize(vulkan_device)) {
     return false;
   }
+  const char* gears_force_color_tests_off =
+      std::getenv("GEARS_ORACLE_FORCE_COLOR_TESTS_OFF");
+  gears_force_color_tests_off_ = gears_force_color_tests_off &&
+                                 *gears_force_color_tests_off &&
+                                 *gears_force_color_tests_off != '0';
 
   bool edram_fragment_shader_interlock =
       render_target_cache_.GetPath() ==
@@ -536,10 +541,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
           description)) {
     return false;
   }
-  const char* gears_force_color_tests_off =
-      std::getenv("GEARS_ORACLE_FORCE_COLOR_TESTS_OFF");
-  if (pixel_shader && normalized_color_mask && gears_force_color_tests_off &&
-      *gears_force_color_tests_off && *gears_force_color_tests_off != '0') {
+  if (pixel_shader && normalized_color_mask && gears_force_color_tests_off_) {
     description.depth_write_enable = false;
     description.depth_compare_op = xenos::CompareFunction::kAlways;
     description.stencil_test_enable = false;
@@ -551,7 +553,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
         render_pass_key.depth_and_color_used,
         description.render_targets[0].color_write_mask);
   }
-  if (pixel_shader) {
+  if (pixel_shader && gears_shader_override_.armed()) {
     const uint64_t pixel_hash =
         GearsShaderOverride::HashUcode(pixel_shader->shader());
     const uint64_t pixel_modification = pixel_shader->modification();
@@ -2504,7 +2506,7 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     const PipelineCreationArguments& creation_arguments,
     VkShaderModule fragment_shader_override) {
   if (fragment_shader_override == VK_NULL_HANDLE &&
-      creation_arguments.pixel_shader) {
+      creation_arguments.pixel_shader && gears_shader_override_.armed()) {
     fragment_shader_override = gears_shader_override_.Select(
         GearsShaderOverride::HashUcode(
             creation_arguments.pixel_shader->shader()),

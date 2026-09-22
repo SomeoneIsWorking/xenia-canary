@@ -399,6 +399,8 @@ class VulkanPipelineCache {
   VulkanRenderTargetCache& render_target_cache_;
   VkShaderStageFlags guest_shader_vertex_stages_;
   GearsShaderOverride gears_shader_override_;
+  // GEARS_ORACLE_FORCE_COLOR_TESTS_OFF, read once at initialization.
+  bool gears_force_color_tests_off_ = false;
 
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;
