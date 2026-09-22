@@ -9,6 +9,8 @@
 
 #include "xenia/gpu/command_processor.h"
 
+#include <algorithm>
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
@@ -900,17 +902,22 @@ CommandProcessor::PendingZPDSlot CommandProcessor::GetPendingZPDSlot(
     uint32_t slot_base, uint32_t end_record) const {
   PendingZPDSlot pending_slot;
 
-  for (const auto& report_pair : logical_zpd_reports_) {
-    const ZPDReport& report = report_pair.second;
-    if (!report.ended || report.pending_segments == 0 ||
-        report.slot_base != slot_base) {
+  auto slot_handles = logical_zpd_report_handles_by_slot_.find(slot_base);
+  const size_t slot_report_count =
+      slot_handles != logical_zpd_report_handles_by_slot_.end()
+          ? slot_handles->second.size()
+          : 0;
+  for (size_t i = 0; i < slot_report_count; ++i) {
+    const ReportHandle report_handle = slot_handles->second[i];
+    const ZPDReport& report = logical_zpd_reports_.at(report_handle);
+    if (!report.ended || report.pending_segments == 0) {
       continue;
     }
 
     // Wait on the oldest unresolved report for this slot first.
     if (pending_slot.report_handle == kInvalidReportHandle ||
-        report_pair.first < pending_slot.report_handle) {
-      pending_slot.report_handle = report_pair.first;
+        report_handle < pending_slot.report_handle) {
+      pending_slot.report_handle = report_handle;
     }
 
     // Slot reuse needs to be handled carefully in fast mode. Keep the biggest
@@ -949,6 +956,33 @@ CommandProcessor::PendingZPDSlot CommandProcessor::GetPendingZPDSlot(
   return pending_slot;
 }
 
+CommandProcessor::ZPDReport& CommandProcessor::AddLogicalZPDReport(
+    ReportHandle report_handle, uint32_t slot_base) {
+  logical_zpd_report_handles_by_slot_[slot_base].push_back(report_handle);
+  ZPDReport& report = logical_zpd_reports_[report_handle];
+  report.slot_base = slot_base;
+  return report;
+}
+
+void CommandProcessor::EraseLogicalZPDReport(ReportHandle report_handle) {
+  auto report = logical_zpd_reports_.find(report_handle);
+  if (report == logical_zpd_reports_.end()) {
+    return;
+  }
+  auto slot_handles =
+      logical_zpd_report_handles_by_slot_.find(report->second.slot_base);
+  assert_true(slot_handles != logical_zpd_report_handles_by_slot_.end());
+  std::vector<ReportHandle>& handles = slot_handles->second;
+  auto handle = std::find(handles.begin(), handles.end(), report_handle);
+  assert_true(handle != handles.end());
+  *handle = handles.back();
+  handles.pop_back();
+  if (handles.empty()) {
+    logical_zpd_report_handles_by_slot_.erase(slot_handles);
+  }
+  logical_zpd_reports_.erase(report);
+}
+
 bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
   if (GetZPDMode() == ZPDMode::kFake) {
     return false;
@@ -982,7 +1016,7 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
         zpd_active_segment_.segment_active = false;
         DiscardZPDQuery();
       }
-      logical_zpd_reports_.erase(zpd_active_segment_.report_handle);
+      EraseLogicalZPDReport(zpd_active_segment_.report_handle);
       zpd_active_segment_ = {};
     }
   }
@@ -1059,8 +1093,7 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
     report_handle = zpd_next_report_handle_++;
   }
 
-  ZPDReport& logical = logical_zpd_reports_[report_handle];
-  logical.slot_base = slot_base;
+  ZPDReport& logical = AddLogicalZPDReport(report_handle, slot_base);
   logical.slot_sequence_id = slot_sequence_id;
   logical.begin_record = begin_record;
   logical.end_record = end_record;
@@ -1114,7 +1147,7 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
   zpd_active_segment_.segment_pending_begin = false;
 
   if (!report_record_base) {
-    logical_zpd_reports_.erase(report_handle);
+    EraseLogicalZPDReport(report_handle);
     zpd_active_segment_ = {};
     return false;
   }
@@ -1166,7 +1199,7 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
 
   if (resolved_immediately) {
     CommitZPDReport(logical, final_value);
-    logical_zpd_reports_.erase(it);
+    EraseLogicalZPDReport(it->first);
   }
 
   bool has_cross_slot_end =
@@ -1226,7 +1259,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
   // Resource setup failed. Drop the logical report and fall back to fake mode.
   if (!IsZPDQueryPoolReady()) {
     zpd_force_fake_fallback_ = true;
-    logical_zpd_reports_.erase(zpd_active_segment_.report_handle);
+    EraseLogicalZPDReport(zpd_active_segment_.report_handle);
     zpd_active_segment_ = {};
     return;
   }
@@ -1327,7 +1360,7 @@ void CommandProcessor::OnZPDQueryResolved(ReportHandle report_handle,
     if (IsZPDReportCurrent(logical)) {
       CommitZPDReport(logical, final_value);
     }
-    logical_zpd_reports_.erase(it);
+    EraseLogicalZPDReport(it->first);
   }
 }
 
@@ -1390,7 +1423,7 @@ void CommandProcessor::PumpPendingRetire() {
                                     : 1;
       CommitZPDReport(logical_report->second, fallback_delta);
     }
-    logical_zpd_reports_.erase(logical_report);
+    EraseLogicalZPDReport(logical_report->first);
     zpd_pending_retire_handle_ = kInvalidReportHandle;
     zpd_pending_retire_stalls_ = 0;
   }
