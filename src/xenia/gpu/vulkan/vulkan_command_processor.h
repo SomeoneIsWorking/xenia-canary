@@ -51,6 +51,21 @@ namespace xe {
 namespace gpu {
 namespace vulkan {
 
+// Which side effect a write to a register has, and where the run of
+// registers sharing it ends; single and range writes both classify by it.
+enum class RegisterWriteKind {
+  kPlain,
+  kSpecial,
+  kFloatConstants,
+  kFetchConstants,
+  kBoolLoopConstants,
+};
+
+struct RegisterWriteSegment {
+  RegisterWriteKind kind;
+  uint32_t end;
+};
+
 class VulkanCommandProcessor final : public CommandProcessor {
  protected:
 #define OVERRIDING_BASE_CMDPROCESSOR
@@ -269,11 +284,24 @@ class VulkanCommandProcessor final : public CommandProcessor {
  protected:
   bool SetupContext() override;
   void ShutdownContext() override;
-  XE_FORCEINLINE
   void WriteRegister(uint32_t index, uint32_t value) override;
-  XE_FORCEINLINE
-  virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
-                                     uint32_t num_registers) override;
+  // A register range is split at the boundaries where writes have side
+  // effects: plain registers and constants are copied in bulk, each constant
+  // block invalidates its host state once per range, and only the special
+  // registers are written one at a time.
+  void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                             uint32_t num_registers) override;
+  // Reads the range straight out of the ring rather than a dword at a time.
+  void WriteRegisterRangeFromRing(xe::RingBuffer* ring, uint32_t base,
+                                  uint32_t num_registers) override;
+
+  // Invalidates the host state that caches the constants in
+  // [index, index + count), all of one kind.
+  void NoteConstantsWritten(RegisterWriteKind kind, uint32_t index,
+                            uint32_t count);
+  // Stales the float constant buffer of each stage whose current shader reads
+  // a constant in [first, last].
+  void MarkFloatConstantsWritten(uint32_t first, uint32_t last);
 
   void OnGammaRamp256EntryTableValueWritten() override;
   void OnGammaRampPWLValueWritten() override;
@@ -301,6 +329,11 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // The per-frame counts are a multiset and cannot see an arrangement.
   std::FILE* gears_draw_order_ = nullptr;
   uint32_t gears_draw_order_index_ = 0;
+  // GEARS_ORACLE_REG_WATCH target, read once at setup; zero disables it.
+  // While a register is watched, ranges are written a register at a time
+  // so the watch sees every write.
+  uint32_t gears_reg_watch_ = 0;
+  uint64_t gears_reg_watch_swaps_ = 0;
   uint64_t gears_reg_watch_hits_ = 0;
   uint64_t gears_const_dump_hash_ = 0;
   uint64_t gears_dump_at_frame_ = 0;
