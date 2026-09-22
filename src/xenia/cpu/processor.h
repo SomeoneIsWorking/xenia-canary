@@ -10,6 +10,8 @@
 #ifndef XENIA_CPU_PROCESSOR_H_
 #define XENIA_CPU_PROCESSOR_H_
 
+#include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -60,6 +62,15 @@ enum class ExecutionState {
   kPaused,
   // Target has been stopped and cannot be restarted (crash, etc).
   kEnded,
+};
+
+// Totals for guest functions the frontend and backend have translated since the
+// processor was created. A failed function stays failed; it is never counted as
+// defined afterwards.
+struct TranslationCounts {
+  uint64_t defined_functions = 0;
+  uint64_t failed_functions = 0;
+  uint64_t host_code_bytes = 0;
 };
 
 class Processor {
@@ -126,6 +137,7 @@ class Processor {
   Module* LookupModule(uint32_t address);
   Function* LookupFunction(Module* module, uint32_t address);
   Function* ResolveFunction(uint32_t address);
+  TranslationCounts translation_counts() const;
 
   ppc::PPCInterpreterResult ExecuteInterpreter(ThreadState* thread_state,
                                                uint32_t address,
@@ -278,6 +290,10 @@ class Processor {
   ExportResolver* export_resolver_ = nullptr;
 
   EntryTable entry_table_;
+
+  std::atomic<uint64_t> defined_functions_ = 0;
+  std::atomic<uint64_t> failed_functions_ = 0;
+  std::atomic<uint64_t> host_code_bytes_ = 0;
   struct GuestCallRedirect {
     uint32_t trampoline_address = 0;
     uint32_t host_address = 0;
