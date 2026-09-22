@@ -127,6 +127,13 @@ class GuestFunction : public Function {
   virtual size_t machine_code_length() const = 0;
   virtual void Invalidate();
 
+  // Offset of the emitted epilogue within machine_code(). A host fault handler
+  // resumes a faulting guest instruction here so the call unwinds through the
+  // same path a translated-block budget exit takes. Zero means the backend
+  // recorded no epilogue and the function must not be diverted.
+  size_t epilog_offset() const { return epilog_offset_; }
+  void set_epilog_offset(size_t value) { epilog_offset_ = value; }
+
   FunctionDebugInfo* debug_info() const { return debug_info_.get(); }
   void set_debug_info(std::unique_ptr<FunctionDebugInfo> debug_info) {
     debug_info_ = std::move(debug_info);
@@ -155,6 +162,7 @@ class GuestFunction : public Function {
 
  protected:
   std::unique_ptr<FunctionDebugInfo> debug_info_;
+  size_t epilog_offset_ = 0;
   FunctionTraceData trace_data_;
   std::vector<SourceMapEntry> source_map_;
   ExternHandler extern_handler_ = nullptr;

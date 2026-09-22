@@ -127,6 +127,10 @@ bool X64Emitter::Emit(GuestFunction* function, HIRBuilder* builder,
     return false;
   }
 
+  // The epilogue begins where the body ends; the prolog starts at offset 0.
+  function->set_epilog_offset(func_info.code_size.prolog +
+                              func_info.code_size.body);
+
   // Copy the final code to the cache and relocate it.
   *out_code_size = getSize();
   *out_code_address = Emplace(func_info, function);
