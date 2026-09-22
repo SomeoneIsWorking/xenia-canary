@@ -1086,7 +1086,7 @@ bool VulkanRenderTargetCache::Resolve(
                                         dump_rows, dump_pitch);
       // The format the COPY will decode these bits under -- the other half of
       // the pair the dump prints per owning render target just below.
-      XELOGE("Resolve: copy decodes EDRAM base {} as {} ({}), is_depth {}",
+      XELOGD("Resolve: copy decodes EDRAM base {} as {} ({}), is_depth {}",
              dump_base,
              resolve_info.IsCopyingDepth()
                  ? xenos::GetDepthRenderTargetFormatName(
@@ -6097,7 +6097,7 @@ void VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base,
         dump_base, dump_row_length_used, dump_rows, dump_pitch);
     return;
   }
-  XELOGE("DumpRenderTargets: EDRAM base {} -> {} rectangle(s)", dump_base,
+  XELOGD("DumpRenderTargets: EDRAM base {} -> {} rectangle(s)", dump_base,
          dump_rectangles_.size());
   // WHAT FORMAT THE BITS ARE IN WHEN THEY REACH THE COPY. The copy shader
   // decodes the EDRAM buffer under the format the RESOLVE declares
@@ -6113,7 +6113,7 @@ void VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base,
   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
     RenderTargetKey owner =
         static_cast<VulkanRenderTarget*>(rectangle.render_target)->key();
-    XELOGE(
+    XELOGD(
         "DumpRenderTargets:   owner base {} pitch32 {} msaa {} is_depth {} "
         "holds format {} ({})",
         owner.base_tiles, owner.pitch_tiles_at_32bpp,

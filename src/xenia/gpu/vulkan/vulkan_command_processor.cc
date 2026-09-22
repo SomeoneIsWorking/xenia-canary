@@ -1798,12 +1798,6 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
            gears_reg_watch_hits_ == 0 ? " (NEVER WRITTEN)" : "");
   }
 
-  // Named for the same reason IssueDraw's early-outs are: from outside, a swap
-  // that produced no image is indistinguishable from a swap that never
-  // happened, and that is the first question when a trace dump writes no file.
-  XELOGE("IssueSwap: front buffer {:08X}, {}x{}", frontbuffer_ptr,
-         frontbuffer_width, frontbuffer_height);
-
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {
     XELOGE("IssueSwap: no presenter, so nothing can receive the frame");
@@ -1828,44 +1822,54 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         "there is no front buffer to present");
     return;
   }
-  XELOGE("IssueSwap: swap texture {}x{} format {}", frontbuffer_width_scaled,
-         frontbuffer_height_scaled, uint32_t(frontbuffer_format));
-
-  // IS THERE A GAMMA RAMP TO PRESENT THROUGH? The swap shader puts every
-  // channel through this LUT, so an all-zero table turns any picture into a
-  // uniformly black one with opaque alpha -- which is exactly what a trace dump
-  // of a known-good frame produces. The ramp is ACCUMULATED from DC_LUT_*
-  // register writes, so it is state a capture has to carry, and the writes that
-  // built it may have happened long before the captured frame.
-  //
-  // It reports whichever of the two ramps this swap will actually use, and it
-  // reports it whether or not it found anything: the entry count, how many
-  // differ from zero, and the first entries as raw values. A ramp that is
-  // present and a ramp that was never uploaded must not look the same from
-  // outside.
+  // What this swap presents: the front buffer, the texture it samples, and
+  // whichever of the two gamma ramps the swap shader will put every channel
+  // through. An all-zero ramp turns any picture into a uniformly black one, and
+  // the ramp is accumulated from DC_LUT_* writes that may precede a captured
+  // frame by a long way, so a ramp that was never uploaded must not look like
+  // one that was. Reported at the first swap and whenever any of it changes,
+  // with the swap count, rather than on every swap.
   {
-    uint32_t nonzero = 0;
-    if (frontbuffer_format == xenos::TextureFormat::k_2_10_10_10 ||
-        frontbuffer_format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16) {
+    GearsSwapReport report;
+    report.frontbuffer_width = frontbuffer_width;
+    report.frontbuffer_height = frontbuffer_height;
+    report.texture_width = frontbuffer_width_scaled;
+    report.texture_height = frontbuffer_height_scaled;
+    report.format = uint32_t(frontbuffer_format);
+    report.pwl_ramp =
+        frontbuffer_format == xenos::TextureFormat::k_2_10_10_10 ||
+        frontbuffer_format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16;
+    if (report.pwl_ramp) {
       const reg::DC_LUT_PWL_DATA* pwl = gamma_ramp_pwl_rgb();
-      for (size_t i = 0; i < 128 * 3; ++i) {
-        if (pwl[i].value) ++nonzero;
+      report.ramp_entries = 128 * 3;
+      for (uint32_t i = 0; i < report.ramp_entries; ++i) {
+        report.ramp_nonzero += pwl[i].value != 0;
       }
-      XELOGE(
-          "IssueSwap: PWL gamma ramp: {} of {} entries non-zero; first {:08X} "
-          "{:08X} {:08X}. An all-zero ramp presents any frame as black",
-          nonzero, 128 * 3, pwl[0].value, pwl[1].value, pwl[2].value);
+      report.ramp_first = {pwl[0].value, pwl[1].value, pwl[2].value};
+      report.ramp_last = pwl[report.ramp_entries - 1].value;
     } else {
       const reg::DC_LUT_30_COLOR* table = gamma_ramp_256_entry_table();
-      for (size_t i = 0; i < 256; ++i) {
-        if (table[i].value) ++nonzero;
+      report.ramp_entries = 256;
+      for (uint32_t i = 0; i < report.ramp_entries; ++i) {
+        report.ramp_nonzero += table[i].value != 0;
       }
-      XELOGE(
-          "IssueSwap: 256-entry gamma ramp: {} of 256 entries non-zero; first "
-          "{:08X} {:08X} {:08X}, last {:08X}. An all-zero ramp presents any "
-          "frame as black",
-          nonzero, table[0].value, table[1].value, table[2].value,
-          table[255].value);
+      report.ramp_first = {table[0].value, table[1].value, table[2].value};
+      report.ramp_last = table[report.ramp_entries - 1].value;
+    }
+    ++gears_swap_count_;
+    if (!(report == gears_last_swap_report_)) {
+      gears_last_swap_report_ = report;
+      XELOGI(
+          "IssueSwap: from swap {}: front buffer {:08X} {}x{}, swap texture "
+          "{}x{} format {}; {} gamma ramp {} of {} entries non-zero, first "
+          "{:08X} {:08X} {:08X}, last {:08X} (an all-zero ramp presents any "
+          "frame as black)",
+          gears_swap_count_, frontbuffer_ptr, report.frontbuffer_width,
+          report.frontbuffer_height, report.texture_width,
+          report.texture_height, report.format,
+          report.pwl_ramp ? "PWL" : "256-entry", report.ramp_nonzero,
+          report.ramp_entries, report.ramp_first[0], report.ramp_first[1],
+          report.ramp_first[2], report.ramp_last);
     }
   }
 
@@ -2183,7 +2187,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         // presenter so it can submit its own commands for displaying it to the
         // queue, and also need to submit the release barrier.
         EndSubmission(true);
-        XELOGE("IssueSwap: the guest-output image was refreshed");
+        XELOGD("IssueSwap: the guest-output image was refreshed");
         return true;
       });
   if (!refreshed) {
@@ -2272,7 +2276,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         "it",
         gears_vconst_ordinal_, gears_draw_order_index_);
   }
-  XELOGE(
+  XELOGD(
       "IssueSwap: this frame's draws: {} recorded, {} dropped with no "
       "rasterization and no memory export, {} dropped with zero host vertices",
       gears_draws_recorded_, gears_draws_no_rasterization_,
@@ -4200,7 +4204,7 @@ bool VulkanCommandProcessor::IssueCopy() {
   // resolve that writes nothing and one that never ran are indistinguishable
   // from the destination memory, and that memory is what the next frame -- or a
   // trace dump's swap -- presents.
-  XELOGE("IssueCopy: entry, dest {:08X}",
+  XELOGD("IssueCopy: entry, dest {:08X}",
          register_file_->values[XE_GPU_REG_RB_COPY_DEST_BASE]);
 
   if (!BeginSubmission(true)) {
@@ -4216,7 +4220,7 @@ bool VulkanCommandProcessor::IssueCopy() {
     XELOGE("IssueCopy: render target cache refused the resolve");
     return false;
   }
-  XELOGE("IssueCopy: resolved {} bytes at {:08X}", written_length,
+  XELOGD("IssueCopy: resolved {} bytes at {:08X}", written_length,
          written_address);
   gears_resolve_ranges_.emplace_back(written_address, written_length);
 
