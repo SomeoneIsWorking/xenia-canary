@@ -13,7 +13,7 @@
 
 #include "config.h"
 #include "third_party/fmt/include/fmt/format.h"
-#include "third_party/tabulate/single_include/tabulate/tabulate.hpp"
+#include "tabulate/single_include/tabulate/tabulate.hpp"
 #include "third_party/zarchive/include/zarchive/zarchivecommon.h"
 #include "third_party/zarchive/include/zarchive/zarchivewriter.h"
 #include "third_party/zarchive/src/sha_256.h"
