@@ -417,6 +417,12 @@ Function* Processor::LookupFunction(Module* module, uint32_t address) {
   return function;
 }
 
+TranslationCounts Processor::translation_counts() const {
+  return {defined_functions_.load(std::memory_order_relaxed),
+          failed_functions_.load(std::memory_order_relaxed),
+          host_code_bytes_.load(std::memory_order_relaxed)};
+}
+
 bool Processor::DemandFunction(Function* function) {
   // Lock function for generation. If it's already being generated
   // by another thread this will block and return DECLARED.
@@ -425,11 +431,15 @@ bool Processor::DemandFunction(Function* function) {
   if (symbol_status == Symbol::Status::kNew) {
     // Symbol is undefined, so define now.
     assert_true(function->is_guest());
-    if (!frontend_->DefineFunction(static_cast<GuestFunction*>(function),
-                                   debug_info_flags_)) {
+    auto guest_function = static_cast<GuestFunction*>(function);
+    if (!frontend_->DefineFunction(guest_function, debug_info_flags_)) {
       function->set_status(Symbol::Status::kFailed);
+      failed_functions_.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
+    defined_functions_.fetch_add(1, std::memory_order_relaxed);
+    host_code_bytes_.fetch_add(guest_function->machine_code_length(),
+                               std::memory_order_relaxed);
 
     // Before we give the symbol back to the rest, let the debugger know.
     OnFunctionDefined(function);
