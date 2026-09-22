@@ -440,12 +440,19 @@ class CommandProcessor {
   PendingZPDSlot GetPendingZPDSlot(uint32_t slot_base,
                                    uint32_t end_record) const;
 
+  // The only mutators of logical_zpd_reports_, so the per-slot index stays
+  // exact: a report's slot is fixed when it is added.
+  ZPDReport& AddLogicalZPDReport(ReportHandle report_handle,
+                                 uint32_t slot_base);
+  void EraseLogicalZPDReport(ReportHandle report_handle);
+
   void ResetZPDState() {
     zpd_active_segment_ = {};
     zpd_next_report_handle_ = 1;
     zpd_slot_sequences_.clear();
     zpd_slot_values_.clear();
     logical_zpd_reports_.clear();
+    logical_zpd_report_handles_by_slot_.clear();
     fast_zpd_report_cached_values_.clear();
     fake_zpd_sample_count_ = 0;
     querybatch_zpd_sample_count_ = UINT32_MAX;
@@ -488,6 +495,11 @@ class CommandProcessor {
   std::unordered_map<uint32_t, uint64_t> zpd_slot_sequences_;
   std::unordered_map<uint32_t, uint32_t> zpd_slot_values_;
   std::unordered_map<ReportHandle, ZPDReport> logical_zpd_reports_;
+  // Live report handles by slot base. A BEGIN looks up only its own slot's
+  // reports; scanning every live report made each BEGIN linear in the number
+  // of occlusion queries in flight.
+  std::unordered_map<uint32_t, std::vector<ReportHandle>>
+      logical_zpd_report_handles_by_slot_;
   ActiveZPDSegment zpd_active_segment_{};
 
   // Cached delta per END.
