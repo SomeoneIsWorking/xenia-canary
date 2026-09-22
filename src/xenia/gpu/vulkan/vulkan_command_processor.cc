@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <algorithm>
 #include <cstdlib>
 #include <set>
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
@@ -163,6 +164,15 @@ std::string VulkanCommandProcessor::GetWindowTitleText() const {
 }
 
 bool VulkanCommandProcessor::SetupContext() {
+  // GEARS_ORACLE_REG_WATCH=<hex reg>: every write to that register, with the
+  // value as bits and as a float. The port side has the same watch; the pair
+  // answers whether a shader constant that differs between the two holds
+  // different bytes IN GUEST MEMORY (a CPU-side difference) or is merely read
+  // differently. A register never written prints nothing, so the count is
+  // reported every 60th swap rather than left to silence.
+  if (const char* gears_watch_env = std::getenv("GEARS_ORACLE_REG_WATCH")) {
+    gears_reg_watch_ = uint32_t(std::strtoul(gears_watch_env, nullptr, 16));
+  }
   // GEARS: read the one-shot constant-dump target once, at setup, so the draw
   // path only ever compares an integer. See the dump site in UpdateBindings.
   if (const char* gears_fenv = std::getenv("GEARS_ORACLE_DUMP_AT_FRAME")) {
@@ -1570,18 +1580,62 @@ void VulkanCommandProcessor::ShutdownContext() {
   CommandProcessor::ShutdownContext();
 }
 
+namespace {
+
+RegisterWriteSegment ClassifyRegisterWrite(uint32_t index) {
+  // CommandProcessor::WriteRegister handles the scratch registers, the
+  // coherency status and the gamma LUT, all within this span.
+  if (index < XE_GPU_REG_SCRATCH_REG0) {
+    return {RegisterWriteKind::kPlain, XE_GPU_REG_SCRATCH_REG0};
+  }
+  if (index <= XE_GPU_REG_DC_LUT_30_COLOR) {
+    return {RegisterWriteKind::kSpecial, XE_GPU_REG_DC_LUT_30_COLOR + 1};
+  }
+  if (index < XE_GPU_REG_SHADER_CONSTANT_000_X) {
+    return {RegisterWriteKind::kPlain, XE_GPU_REG_SHADER_CONSTANT_000_X};
+  }
+  if (index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
+    return {RegisterWriteKind::kFloatConstants,
+            XE_GPU_REG_SHADER_CONSTANT_511_W + 1};
+  }
+  if (index < XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) {
+    return {RegisterWriteKind::kPlain, XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0};
+  }
+  if (index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
+    return {RegisterWriteKind::kFetchConstants,
+            XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 + 1};
+  }
+  if (index < XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031) {
+    return {RegisterWriteKind::kPlain, XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031};
+  }
+  if (index <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31) {
+    return {RegisterWriteKind::kBoolLoopConstants,
+            XE_GPU_REG_SHADER_CONSTANT_LOOP_31 + 1};
+  }
+  return {RegisterWriteKind::kPlain, RegisterFile::kRegisterCount};
+}
+
+// Whether any bit in [first, last] of a bit map is set.
+bool AnyBitInRange(const uint64_t* map, uint32_t first, uint32_t last) {
+  for (uint32_t word = first >> 6; word <= (last >> 6); ++word) {
+    uint64_t mask = ~uint64_t(0);
+    if (word == (first >> 6)) {
+      mask &= ~uint64_t(0) << (first & 63);
+    }
+    if (word == (last >> 6)) {
+      mask &= ~uint64_t(0) >> (63 - (last & 63));
+    }
+    if (map[word] & mask) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
-  // GEARS_ORACLE_REG_WATCH=<hex reg>: every write to that register, with the
-  // value as bits and as a float. The port side has the same watch; the pair
-  // answers whether a shader constant that differs between the two holds
-  // different bytes IN GUEST MEMORY (a CPU-side difference) or is merely read
-  // differently. A register never written prints nothing, so the count is
-  // reported at the end of every frame rather than left to silence.
-  static const uint32_t gears_reg_watch = []() -> uint32_t {
-    const char* e = std::getenv("GEARS_ORACLE_REG_WATCH");
-    return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0u;
-  }();
-  if (gears_reg_watch != 0 && index == gears_reg_watch) {
+  if (gears_reg_watch_ != 0 && index == gears_reg_watch_) {
     float as_float;
     std::memcpy(&as_float, &value, sizeof(as_float));
     ++gears_reg_watch_hits_;
@@ -1590,49 +1644,121 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
   }
 
   CommandProcessor::WriteRegister(index, value);
-
-  if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
-      index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
-    if (frame_open_) {
-      uint32_t float_constant_index =
-          (index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
-      if (float_constant_index >= 256) {
-        float_constant_index -= 256;
-        if (current_float_constant_map_pixel_[float_constant_index >> 6] &
-            (1ull << (float_constant_index & 63))) {
-          current_constant_buffers_up_to_date_ &= ~(
-              UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatPixel);
-        }
-      } else {
-        if (current_float_constant_map_vertex_[float_constant_index >> 6] &
-            (1ull << (float_constant_index & 63))) {
-          current_constant_buffers_up_to_date_ &= ~(
-              UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatVertex);
-        }
-      }
-    }
-  } else if (index >= XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 &&
-             index <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31) {
-    current_constant_buffers_up_to_date_ &=
-        ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferBoolLoop);
-  } else if (index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
-             index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
-    current_constant_buffers_up_to_date_ &=
-        ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);
-    if (texture_cache_) {
-      texture_cache_->TextureFetchConstantWritten(
-          (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
-    }
-  }
+  NoteConstantsWritten(ClassifyRegisterWrite(index).kind, index, 1);
 }
+
 void VulkanCommandProcessor::WriteRegistersFromMem(uint32_t start_index,
                                                    uint32_t* base,
                                                    uint32_t num_registers) {
-  for (uint32_t i = 0; i < num_registers; ++i) {
-    uint32_t data = xe::load_and_swap<uint32_t>(base + i);
-    VulkanCommandProcessor::WriteRegister(start_index + i, data);
+  if (gears_reg_watch_ != 0) {
+    for (uint32_t i = 0; i < num_registers; ++i) {
+      VulkanCommandProcessor::WriteRegister(
+          start_index + i, xe::load_and_swap<uint32_t>(base + i));
+    }
+    return;
+  }
+  uint32_t end = start_index + num_registers;
+  if (end > RegisterFile::kRegisterCount) {
+    XELOGW("VulkanCommandProcessor: registers {}..{} are out of bounds",
+           std::max<uint32_t>(start_index, RegisterFile::kRegisterCount),
+           end - 1);
+    end = std::max<uint32_t>(start_index, RegisterFile::kRegisterCount);
+  }
+  uint32_t* values = register_file_->values;
+  uint32_t index = start_index;
+  while (index < end) {
+    RegisterWriteSegment segment = ClassifyRegisterWrite(index);
+    uint32_t count = std::min(end, segment.end) - index;
+    switch (segment.kind) {
+      case RegisterWriteKind::kPlain:
+        copy_and_swap_32_unaligned(&values[index], base, count);
+        break;
+      case RegisterWriteKind::kSpecial:
+        for (uint32_t i = 0; i < count; ++i) {
+          CommandProcessor::WriteRegister(
+              index + i, xe::load_and_swap<uint32_t>(base + i));
+        }
+        break;
+      case RegisterWriteKind::kFloatConstants:
+      case RegisterWriteKind::kFetchConstants:
+      case RegisterWriteKind::kBoolLoopConstants:
+        copy_and_swap_32_unaligned(&values[index], base, count);
+        NoteConstantsWritten(segment.kind, index, count);
+        break;
+    }
+    index += count;
+    base += count;
   }
 }
+
+void VulkanCommandProcessor::WriteRegisterRangeFromRing(
+    xe::RingBuffer* ring, uint32_t base, uint32_t num_registers) {
+  RingBuffer::ReadRange range =
+      ring->BeginRead(num_registers * sizeof(uint32_t));
+  uint32_t first_count =
+      static_cast<uint32_t>(range.first_length / sizeof(uint32_t));
+  WriteRegistersFromMem(
+      base, reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(range.first)),
+      first_count);
+  if (range.second) {
+    WriteRegistersFromMem(
+        base + first_count,
+        reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(range.second)),
+        num_registers - first_count);
+  }
+  ring->EndRead(range);
+}
+
+void VulkanCommandProcessor::NoteConstantsWritten(RegisterWriteKind kind,
+                                                  uint32_t index,
+                                                  uint32_t count) {
+  uint32_t last = index + count - 1;
+  switch (kind) {
+    case RegisterWriteKind::kFloatConstants:
+      if (frame_open_) {
+        MarkFloatConstantsWritten(
+            (index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2,
+            (last - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2);
+      }
+      break;
+    case RegisterWriteKind::kFetchConstants:
+      current_constant_buffers_up_to_date_ &=
+          ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);
+      if (texture_cache_) {
+        texture_cache_->TextureFetchConstantsWritten(
+            (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6,
+            (last - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
+      }
+      break;
+    case RegisterWriteKind::kBoolLoopConstants:
+      current_constant_buffers_up_to_date_ &=
+          ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferBoolLoop);
+      break;
+    case RegisterWriteKind::kPlain:
+    case RegisterWriteKind::kSpecial:
+      break;
+  }
+}
+
+void VulkanCommandProcessor::MarkFloatConstantsWritten(uint32_t first,
+                                                       uint32_t last) {
+  constexpr uint32_t kFloatConstantsPerStage = 256;
+  if (first < kFloatConstantsPerStage &&
+      AnyBitInRange(current_float_constant_map_vertex_, first,
+                    std::min(last, kFloatConstantsPerStage - 1))) {
+    current_constant_buffers_up_to_date_ &=
+        ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatVertex);
+  }
+  if (last >= kFloatConstantsPerStage &&
+      AnyBitInRange(current_float_constant_map_pixel_,
+                    std::max(first, kFloatConstantsPerStage) -
+                        kFloatConstantsPerStage,
+                    last - kFloatConstantsPerStage)) {
+    current_constant_buffers_up_to_date_ &=
+        ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatPixel);
+  }
+}
+
 void VulkanCommandProcessor::SparseBindBuffer(
     VkBuffer buffer, uint32_t bind_count, const VkSparseMemoryBind* binds,
     VkPipelineStageFlags wait_stage_mask) {
@@ -1666,14 +1792,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // never written would otherwise print NOTHING, which reads exactly like "the
   // register is fine"; and a run under this knob is always ended by a signal,
   // so an exit-time report is one that never prints.
-  {
-    const char* watch_env = std::getenv("GEARS_ORACLE_REG_WATCH");
-    static uint64_t swaps = 0;
-    if (watch_env != nullptr && (swaps++ % 60) == 0) {
-      XELOGI("GEARS_REG_WATCH census (cumulative): reg {} = {}{}", watch_env,
-             gears_reg_watch_hits_,
-             gears_reg_watch_hits_ == 0 ? " (NEVER WRITTEN)" : "");
-    }
+  if (gears_reg_watch_ != 0 && (gears_reg_watch_swaps_++ % 60) == 0) {
+    XELOGI("GEARS_REG_WATCH census (cumulative): reg {:#x} = {}{}",
+           gears_reg_watch_, gears_reg_watch_hits_,
+           gears_reg_watch_hits_ == 0 ? " (NEVER WRITTEN)" : "");
   }
 
   // Named for the same reason IssueDraw's early-outs are: from outside, a swap
