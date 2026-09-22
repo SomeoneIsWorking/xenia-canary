@@ -23,6 +23,13 @@ static bool has_console_attached_ = false;
 
 bool has_console_attached() { return has_console_attached_; }
 
+namespace {
+bool console_app_ = false;
+}  // namespace
+
+bool is_console_app() { return console_app_; }
+void set_console_app(bool value) { console_app_ = value; }
+
 static bool has_shell_environment_variable() {
   size_t size = 0;
   // Check if SHELL exists
