@@ -9,7 +9,17 @@
 
 #include "xenia/cpu/backend/x64/x64_code_cache.h"
 
+#include <cstdio>
 #include <cstring>
+#include <mutex>
+
+#include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
+#include "xenia/cpu/cpu_flags.h"
+
+#if XE_PLATFORM_LINUX
+#include <unistd.h>
+#endif
 
 #if ENABLE_VTUNE
 #include "third_party/vtune/include/jitprofiling.h"
@@ -36,9 +46,44 @@ void X64CodeCache::FlushCodeRange(void* address, size_t size) {
   // x86-64 has coherent I/D caches; no flush needed.
 }
 
+namespace {
+
+#if XE_PLATFORM_LINUX
+// perf's JIT symbol interface: one "start size name" line per code range, in
+// /tmp/perf-<pid>.map, which perf reads after the run. The file is kept open
+// and flushed per line so a process that ends without cleanup keeps its map.
+void AppendPerfMapEntry(uint32_t guest_address, const void* code_address,
+                        size_t code_size) {
+  static std::mutex mutex;
+  static std::FILE* map = nullptr;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!map) {
+    char path[64];
+    std::snprintf(path, sizeof(path), "/tmp/perf-%d.map", int(getpid()));
+    map = std::fopen(path, "a");
+    if (!map) {
+      XELOGE("perf_map: cannot open {}", path);
+      return;
+    }
+  }
+  std::fprintf(map, "%llx %zx guest_%08X\n",
+               static_cast<unsigned long long>(
+                   reinterpret_cast<uintptr_t>(code_address)),
+               code_size, guest_address);
+  std::fflush(map);
+}
+#endif
+
+}  // namespace
+
 void X64CodeCache::OnCodePlaced(uint32_t guest_address,
                                 GuestFunction* function_info,
                                 void* code_execute_address, size_t code_size) {
+#if XE_PLATFORM_LINUX
+  if (cvars::perf_map) {
+    AppendPerfMapEntry(guest_address, code_execute_address, code_size);
+  }
+#endif
 #if ENABLE_VTUNE
   if (iJIT_IsProfilingActive() == iJIT_SAMPLING_ON) {
     std::string method_name;

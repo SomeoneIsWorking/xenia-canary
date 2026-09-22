@@ -119,9 +119,12 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
               normalized_framerate_limit = 60;
             }
 
+            // A title that presents every N vblanks runs at limit / N frames
+            // per second, so the vblank period may be as short as the
+            // unsynchronized path's 1 ms rather than capping titles at 200 Hz.
             const double vsync_duration_d =
                 cvars::vsync
-                    ? std::max<double>(5.0,
+                    ? std::max<double>(1.0,
                                        1000.0 / static_cast<double>(
                                                     normalized_framerate_limit))
                     : 1.0;
