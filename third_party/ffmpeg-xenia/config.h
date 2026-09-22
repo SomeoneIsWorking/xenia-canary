@@ -342,6 +342,13 @@
   #if defined(__ANDROID__)
     #define HAVE_ARC4RANDOM 1
     #define HAVE_RSYNC_CONTIMEOUT 1
+  #elif defined(__APPLE__)
+    /* Mach-O has no symbol versioning and no OSS soundcard header, and iconv
+       is a separate library rather than part of libc. Xenia decodes XMA audio
+       and never reaches FFmpeg's subtitle recoding, so iconv stays off instead
+       of adding a link dependency for an unreachable feature. */
+    #define HAVE_PTHREAD_CANCEL 1
+    #define HAVE_GLOB 1
   #else
     /* Linux desktop */
     #define HAVE_PTHREAD_CANCEL 1
