@@ -35,6 +35,10 @@ class GearsShaderOverride {
   static uint64_t HashUcode(const Shader& shader);
 
   bool Initialize(const ui::vulkan::VulkanDevice* vulkan_device);
+
+  // Whether a target shader was configured. Unarmed, the pipeline cache must
+  // not hash microcode on the draw path.
+  bool armed() const { return target_hash_ != 0; }
   void Shutdown(const ui::vulkan::VulkanDevice* vulkan_device);
 
   void Observe(uint64_t ucode_hash, uint64_t modification);
