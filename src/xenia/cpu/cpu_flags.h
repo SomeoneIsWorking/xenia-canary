@@ -22,6 +22,8 @@ DECLARE_bool(trace_function_coverage);
 DECLARE_bool(trace_function_references);
 DECLARE_bool(trace_function_data);
 
+DECLARE_bool(perf_map);
+
 DECLARE_bool(validate_hir);
 
 DECLARE_uint64(pvr);

@@ -30,6 +30,11 @@ DEFINE_bool(trace_function_references, false,
 DEFINE_bool(trace_function_data, false,
             "Generate tracing for function result data.", "CPU");
 
+DEFINE_bool(perf_map, false,
+            "Append each translated function to /tmp/perf-<pid>.map, the "
+            "symbol file Linux perf reads for JIT code.",
+            "CPU");
+
 DEFINE_bool(validate_hir, false,
             "Perform validation checks on the HIR during compilation.", "CPU");
 
