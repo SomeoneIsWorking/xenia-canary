@@ -439,6 +439,10 @@ class Memory {
 
   // Gets the defined MMIO range for the given virtual address, if any.
   cpu::MMIORange* LookupVirtualMappedRange(uint32_t virtual_address);
+  // Gets the first defined MMIO range that any address in [first, last]
+  // falls in, if any.
+  cpu::MMIORange* LookupVirtualMappedRangeOverlapping(uint32_t first,
+                                                      uint32_t last);
 
   // Physical memory access callbacks, two types of them.
   //
