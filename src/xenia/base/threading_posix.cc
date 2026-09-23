@@ -1398,7 +1398,9 @@ void Thread::Exit(int exit_code) {
 }
 
 void set_name(const std::string_view name) {
-  pthread_setname_np(pthread_self(), std::string(name).c_str());
+  // pthread_setname_np rejects names longer than 15 characters instead of
+  // truncating them.
+  pthread_setname_np(pthread_self(), std::string(name.substr(0, 15)).c_str());
 #if XE_PLATFORM_ANDROID
   if (!android_pthread_getname_np_ && current_thread_) {
     current_thread_->condition().SetAndroidPreApi26Name(name);
