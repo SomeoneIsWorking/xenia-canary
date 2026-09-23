@@ -10,6 +10,7 @@
 #include "xenia/gpu/command_processor.h"
 
 #include <algorithm>
+#include <thread>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/byte_stream.h"
@@ -185,6 +186,24 @@ CommandProcessor::SwapIntervalBuckets CommandProcessor::swap_interval_buckets()
         swap_interval_buckets_[bucket].load(std::memory_order_relaxed);
   }
   return buckets;
+}
+
+void CommandProcessor::PaceGuestSwap() {
+  if (!cvars::guest_present_limit) {
+    return;
+  }
+  auto now = std::chrono::steady_clock::now();
+  auto base = now;
+  if (next_guest_swap_deadline_ && now < *next_guest_swap_deadline_) {
+    std::this_thread::sleep_until(*next_guest_swap_deadline_);
+    // The schedule advances from the deadline, not from when the sleep
+    // returned, so oversleeping does not accumulate into a lower rate.
+    base = *next_guest_swap_deadline_;
+  }
+  next_guest_swap_deadline_ =
+      base + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                 std::chrono::seconds(1)) /
+                 cvars::guest_present_limit;
 }
 
 void CommandProcessor::RecordGuestSwap() {
