@@ -823,6 +823,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
   static constexpr uint32_t kLinkedTypeDescriptorPoolSetCount = 32768;
   static const VkDescriptorPoolSize kDescriptorPoolSizeUniformBuffer;
   static const VkDescriptorPoolSize kDescriptorPoolSizeStorageBuffer;
+  static const VkDescriptorPoolSize kDescriptorPoolSizeConstants;
   static const VkDescriptorPoolSize kDescriptorPoolSizeTextures[2];
   ui::vulkan::LinkedTypeDescriptorSetAllocator
       transient_descriptor_allocator_uniform_buffer_;
@@ -832,10 +833,16 @@ class VulkanCommandProcessor final : public CommandProcessor {
   std::array<std::vector<VkDescriptorSet>,
              size_t(SingleTransientDescriptorLayout::kCount)>
       single_transient_descriptors_free_;
+  ui::vulkan::LinkedTypeDescriptorSetAllocator
+      transient_descriptor_allocator_constants_;
   // <Usage frame, set>.
   std::deque<std::pair<uint64_t, VkDescriptorSet>>
       constants_transient_descriptors_used_;
   std::vector<VkDescriptorSet> constants_transient_descriptors_free_;
+  // The buffers the constants descriptor set of the current frame was written
+  // with, or null before it has been written in the frame.
+  std::array<VkBuffer, SpirvShaderTranslator::kConstantBufferCount>
+      constants_descriptor_set_buffers_{};
 
   ui::vulkan::LinkedTypeDescriptorSetAllocator
       transient_descriptor_allocator_textures_;
@@ -999,6 +1006,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
 
   // Pipeline layout of the current guest graphics pipeline.
   const PipelineLayout* current_guest_graphics_pipeline_layout_;
+  // The float constant descriptor range, for the maximum of 256 float4
+  // constants per stage.
+  static constexpr VkDeviceSize kFloatConstantsDescriptorRange =
+      sizeof(float) * 4 * 256;
+  // Offsets are the dynamic offsets of the constants of the current draw,
+  // ranges are the descriptor ranges.
   VkDescriptorBufferInfo current_constant_buffer_infos_
       [SpirvShaderTranslator::kConstantBufferCount];
   // Whether up-to-date data has been written to constant (uniform) buffers, and
