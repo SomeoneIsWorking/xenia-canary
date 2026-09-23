@@ -912,6 +912,9 @@ bool VulkanPipelineCache::TranslateAnalyzedShader(
           texture_binding_count * sizeof(*texture_bindings.data());
       uint64_t texture_binding_layout_hash =
           XXH3_64bits(texture_bindings.data(), texture_binding_layout_bytes);
+      // Different shaders are translated on different threads when storage
+      // is loaded, and all of them share these layouts.
+      std::lock_guard<std::mutex> layouts_lock(layouts_mutex_);
       auto found_range =
           texture_binding_layout_map_.equal_range(texture_binding_layout_hash);
       for (auto it = found_range.first; it != found_range.second; ++it) {
