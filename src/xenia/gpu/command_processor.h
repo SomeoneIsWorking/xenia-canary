@@ -151,6 +151,11 @@ class CommandProcessor {
   // A snapshot, readable from any thread while swaps are being recorded.
   SwapIntervalBuckets swap_interval_buckets() const;
 
+  // Wakes a WAIT_REG_MEM early after guest code that may have written the
+  // polled value -- an interrupt handler -- has run, instead of leaving it
+  // asleep for the rest of its poll interval. Callable from any thread.
+  void NotifyGuestInterruptHandled() { guest_interrupt_event_->Set(); }
+
   Shader* active_vertex_shader() const { return active_vertex_shader_; }
   Shader* active_pixel_shader() const { return active_pixel_shader_; }
 
@@ -592,6 +597,7 @@ class CommandProcessor {
   uint32_t read_ptr_writeback_ptr_ = 0;
 
   std::unique_ptr<xe::threading::Event> write_ptr_index_event_;
+  std::unique_ptr<xe::threading::Event> guest_interrupt_event_;
   std::atomic<uint32_t> write_ptr_index_;
 
   uint64_t bin_select_ = 0xFFFFFFFFull;

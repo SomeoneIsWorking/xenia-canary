@@ -745,7 +745,11 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
           // User wants it fast and dangerous.
           // do nothing
         } else {
-          xe::threading::Sleep(std::chrono::milliseconds(wait / 0x100));
+          // The value is typically released by a guest interrupt handler
+          // (the vblank's, for a title pacing its presents), so wake as soon
+          // as one has run rather than after the whole poll interval.
+          xe::threading::Wait(guest_interrupt_event_.get(), false,
+                              std::chrono::milliseconds(wait / 0x100));
           ReturnFromWait();
         }
 
