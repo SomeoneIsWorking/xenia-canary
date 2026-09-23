@@ -10,7 +10,7 @@
 #ifndef XENIA_GPU_DXBC_SHADER_H_
 #define XENIA_GPU_DXBC_SHADER_H_
 
-#include <atomic>
+#include <mutex>
 #include <vector>
 
 #include "xenia/gpu/dxbc_shader_translator.h"
@@ -80,7 +80,7 @@ class DxbcShader : public Shader {
  private:
   friend class DxbcShaderTranslator;
 
-  std::atomic_flag bindings_setup_entered_ = ATOMIC_FLAG_INIT;
+  std::once_flag bindings_setup_once_;
   std::vector<TextureBinding> texture_bindings_;
   std::vector<SamplerBinding> sampler_bindings_;
   uint32_t used_texture_mask_ = 0;

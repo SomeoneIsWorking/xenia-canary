@@ -10,6 +10,7 @@
 #include "xenia/gpu/dxbc_shader_translator.h"
 
 #include <cstring>
+#include <mutex>
 
 #include "third_party/dxbc/DXBCChecksum.h"
 
@@ -1351,37 +1352,42 @@ void DxbcShaderTranslator::PostTranslation() {
     return;
   }
   DxbcShader* dxbc_shader = dynamic_cast<DxbcShader*>(&translation.shader());
-  if (dxbc_shader && !dxbc_shader->bindings_setup_entered_.test_and_set(
-                         std::memory_order_relaxed)) {
-    dxbc_shader->texture_bindings_.clear();
-    dxbc_shader->texture_bindings_.reserve(texture_bindings_.size());
-    dxbc_shader->used_texture_mask_ = 0;
-    for (const TextureBinding& translator_binding : texture_bindings_) {
-      DxbcShader::TextureBinding& shader_binding =
-          dxbc_shader->texture_bindings_.emplace_back();
-      // For a stable hash.
-      std::memset(&shader_binding, 0, sizeof(shader_binding));
-      shader_binding.bindless_descriptor_index =
-          translator_binding.bindless_descriptor_index;
-      shader_binding.fetch_constant = translator_binding.fetch_constant;
-      shader_binding.dimension = translator_binding.dimension;
-      shader_binding.is_signed = translator_binding.is_signed;
-      dxbc_shader->used_texture_mask_ |= 1u
-                                         << translator_binding.fetch_constant;
-    }
-    dxbc_shader->sampler_bindings_.clear();
-    dxbc_shader->sampler_bindings_.reserve(sampler_bindings_.size());
-    for (const SamplerBinding& translator_binding : sampler_bindings_) {
-      DxbcShader::SamplerBinding& shader_binding =
-          dxbc_shader->sampler_bindings_.emplace_back();
-      shader_binding.bindless_descriptor_index =
-          translator_binding.bindless_descriptor_index;
-      shader_binding.fetch_constant = translator_binding.fetch_constant;
-      shader_binding.mag_filter = translator_binding.mag_filter;
-      shader_binding.min_filter = translator_binding.min_filter;
-      shader_binding.mip_filter = translator_binding.mip_filter;
-      shader_binding.aniso_filter = translator_binding.aniso_filter;
-    }
+  // Every modification of a shader has the same bindings, and modifications
+  // may be translated on different threads. call_once publishes them once and
+  // returns in every other thread only after they are complete, so a caller
+  // reading them after translation never sees them half-written.
+  if (dxbc_shader) {
+    std::call_once(dxbc_shader->bindings_setup_once_, [&] {
+      dxbc_shader->texture_bindings_.clear();
+      dxbc_shader->texture_bindings_.reserve(texture_bindings_.size());
+      dxbc_shader->used_texture_mask_ = 0;
+      for (const TextureBinding& translator_binding : texture_bindings_) {
+        DxbcShader::TextureBinding& shader_binding =
+            dxbc_shader->texture_bindings_.emplace_back();
+        // For a stable hash.
+        std::memset(&shader_binding, 0, sizeof(shader_binding));
+        shader_binding.bindless_descriptor_index =
+            translator_binding.bindless_descriptor_index;
+        shader_binding.fetch_constant = translator_binding.fetch_constant;
+        shader_binding.dimension = translator_binding.dimension;
+        shader_binding.is_signed = translator_binding.is_signed;
+        dxbc_shader->used_texture_mask_ |= 1u
+                                           << translator_binding.fetch_constant;
+      }
+      dxbc_shader->sampler_bindings_.clear();
+      dxbc_shader->sampler_bindings_.reserve(sampler_bindings_.size());
+      for (const SamplerBinding& translator_binding : sampler_bindings_) {
+        DxbcShader::SamplerBinding& shader_binding =
+            dxbc_shader->sampler_bindings_.emplace_back();
+        shader_binding.bindless_descriptor_index =
+            translator_binding.bindless_descriptor_index;
+        shader_binding.fetch_constant = translator_binding.fetch_constant;
+        shader_binding.mag_filter = translator_binding.mag_filter;
+        shader_binding.min_filter = translator_binding.min_filter;
+        shader_binding.mip_filter = translator_binding.mip_filter;
+        shader_binding.aniso_filter = translator_binding.aniso_filter;
+      }
+    });
   }
 }
 
