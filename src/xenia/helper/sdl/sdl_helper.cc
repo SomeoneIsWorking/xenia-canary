@@ -68,6 +68,11 @@ bool SDLHelper::SetHints() {
   // managed by xenia. https://bugzilla.libsdl.org/show_bug.cgi?id=5104
   suc &= setHint(SDL_HINT_TIMER_RESOLUTION, "0", true);
 
+  // SDL would otherwise turn SIGINT and SIGTERM into an SDL quit event, which
+  // xenia never consumes, so the process would ignore both. The host owns the
+  // process's signal disposition.
+  suc &= setHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+
   suc &= setHint(SDL_HINT_AUDIO_CATEGORY, "playback");
 
   suc &= setHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "xenia emulator");
