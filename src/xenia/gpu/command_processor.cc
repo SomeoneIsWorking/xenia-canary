@@ -172,8 +172,10 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
       trace_writer_(graphics_system->memory()->physical_membase()),
       worker_running_(true),
       write_ptr_index_event_(xe::threading::Event::CreateAutoResetEvent(false)),
+      guest_interrupt_event_(xe::threading::Event::CreateAutoResetEvent(false)),
       write_ptr_index_(0) {
   assert_not_null(write_ptr_index_event_);
+  assert_not_null(guest_interrupt_event_);
 }
 
 CommandProcessor::~CommandProcessor() = default;
@@ -261,6 +263,7 @@ void CommandProcessor::Shutdown() {
 
   worker_running_ = false;
   write_ptr_index_event_->Set();
+  guest_interrupt_event_->Set();
   worker_thread_->Wait(0, 0, 0, nullptr);
   worker_thread_.reset();
 }
