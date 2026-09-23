@@ -177,6 +177,31 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
 
 CommandProcessor::~CommandProcessor() = default;
 
+CommandProcessor::SwapIntervalBuckets CommandProcessor::swap_interval_buckets()
+    const {
+  SwapIntervalBuckets buckets;
+  for (size_t bucket = 0; bucket < kSwapIntervalBucketCount; ++bucket) {
+    buckets[bucket] =
+        swap_interval_buckets_[bucket].load(std::memory_order_relaxed);
+  }
+  return buckets;
+}
+
+void CommandProcessor::RecordGuestSwap() {
+  auto now = std::chrono::steady_clock::now();
+  if (last_guest_swap_time_) {
+    auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+                            now - *last_guest_swap_time_)
+                            .count();
+    size_t bucket =
+        std::min(size_t(microseconds / kSwapIntervalBucketMicroseconds),
+                 kSwapIntervalBucketCount - 1);
+    swap_interval_buckets_[bucket].fetch_add(1, std::memory_order_relaxed);
+  }
+  last_guest_swap_time_ = now;
+  guest_swap_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool CommandProcessor::Initialize() {
   // Initialize the gamma ramps to their default (linear) values - taken from
   // what games set when starting with the sRGB (return value 1)
