@@ -392,14 +392,10 @@ void CommandProcessor::WorkerThreadMain() {
     // Execute. Note that we handle wraparound transparently.
     read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
 
-    // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
-    //     that many indices.
-    // Keep in mind that the gpu also updates the cpu-side copy if the write
-    // pointer and read pointer would be equal
-    if (read_ptr_writeback_ptr_) {
-      xe::store_and_swap<uint32_t>(
-          memory_->TranslatePhysical(read_ptr_writeback_ptr_), read_ptr_index_);
-    }
+    // The primary buffer reports its progress every RB_BLKSZ as it goes; this
+    // reports where the batch ended, which the guest compares with its write
+    // pointer to see the ring drained.
+    WriteBackReadPointer(read_ptr_index_);
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
     // but no games seem to actually use it.
@@ -480,9 +476,17 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr,
   // ptr = RB_RPTR_ADDR, pointer to write back the address to.
   read_ptr_writeback_ptr_ = ptr;
   // CP_RB_CNTL Ring Buffer Control 0x704
-  // block_size = RB_BLKSZ, log2 of number of quadwords read between updates of
-  //              the read pointer.
-  read_ptr_update_freq_ = uint32_t(1) << block_size_log2 >> 2;
+  // block_size = RB_BLKSZ, log2 of the number of 8-byte units read between
+  //              updates of the read pointer, the unit RB_BUFSZ also uses.
+  //              Held in dwords.
+  read_ptr_update_freq_ = uint32_t(1) << (block_size_log2 + 1);
+}
+
+void CommandProcessor::WriteBackReadPointer(uint32_t read_index) {
+  if (read_ptr_writeback_ptr_) {
+    xe::store_and_swap<uint32_t>(
+        memory_->TranslatePhysical(read_ptr_writeback_ptr_), read_index);
+  }
 }
 
 XE_NOINLINE XE_COLD void CommandProcessor::LogKickoffInitator(uint32_t value) {
