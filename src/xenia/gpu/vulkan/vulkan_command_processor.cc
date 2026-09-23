@@ -1743,15 +1743,21 @@ void VulkanCommandProcessor::NoteConstantsWritten(RegisterWriteKind kind,
             (last - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2);
       }
       break;
-    case RegisterWriteKind::kFetchConstants:
+    case RegisterWriteKind::kFetchConstants: {
       current_constant_buffers_up_to_date_ &=
           ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);
+      uint32_t first_fetch_constant =
+          (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6;
+      uint32_t last_fetch_constant =
+          (last - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6;
+      fetch_constants_changed_for_samplers_ |=
+          uint32_t((UINT64_C(1) << (last_fetch_constant + 1)) -
+                   (UINT64_C(1) << first_fetch_constant));
       if (texture_cache_) {
-        texture_cache_->TextureFetchConstantsWritten(
-            (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6,
-            (last - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
+        texture_cache_->TextureFetchConstantsWritten(first_fetch_constant,
+                                                     last_fetch_constant);
       }
-      break;
+    } break;
     case RegisterWriteKind::kBoolLoopConstants:
       current_constant_buffers_up_to_date_ &=
           ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferBoolLoop);
@@ -1779,6 +1785,26 @@ void VulkanCommandProcessor::MarkFloatConstantsWritten(uint32_t first,
     current_constant_buffers_up_to_date_ &=
         ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatPixel);
   }
+}
+
+bool VulkanCommandProcessor::AreCurrentSamplersReusable(
+    const VulkanShader* vertex_shader, const VulkanShader* pixel_shader) const {
+  if (vertex_shader != current_samplers_vertex_shader_ ||
+      pixel_shader != current_samplers_pixel_shader_ ||
+      current_samplers_submission_ != GetCurrentSubmission()) {
+    return false;
+  }
+  uint32_t fetch_constants_used = 0;
+  for (const VulkanShader* shader : {vertex_shader, pixel_shader}) {
+    if (!shader) {
+      continue;
+    }
+    for (const VulkanShader::SamplerBinding& sampler_binding :
+         shader->GetSamplerBindingsAfterTranslation()) {
+      fetch_constants_used |= UINT32_C(1) << sampler_binding.fetch_constant;
+    }
+  }
+  return !(fetch_constants_changed_for_samplers_ & fetch_constants_used);
 }
 
 void VulkanCommandProcessor::SparseBindBuffer(
@@ -3330,8 +3356,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     // different for some reason (like a race condition with the guest in index
     // buffer processing in the primitive processor resulting in different host
     // vertex shader types), the bindings will stay the same.
-    // TODO(Triang3l): Sampler caching and reuse for adjacent draws within one
-    // submission.
+    if (!i && AreCurrentSamplersReusable(vertex_shader, pixel_shader)) {
+      break;
+    }
+    current_samplers_vertex_shader_ = nullptr;
+    current_samplers_pixel_shader_ = nullptr;
     uint32_t samplers_overflowed_count = 0;
     for (uint32_t j = 0; j < 2; ++j) {
       std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>&
@@ -3381,6 +3410,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       }
     }
     if (!samplers_overflowed_count) {
+      current_samplers_vertex_shader_ = vertex_shader;
+      current_samplers_pixel_shader_ = pixel_shader;
+      current_samplers_submission_ = GetCurrentSubmission();
+      fetch_constants_changed_for_samplers_ = 0;
       break;
     }
     assert_zero(i);

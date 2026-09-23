@@ -304,6 +304,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Stales the float constant buffer of each stage whose current shader reads
   // a constant in [first, last].
   void MarkFloatConstantsWritten(uint32_t first, uint32_t last);
+  // Whether the current samplers are those of a draw with these shaders.
+  bool AreCurrentSamplersReusable(const VulkanShader* vertex_shader,
+                                  const VulkanShader* pixel_shader) const;
 
   void OnGammaRamp256EntryTableValueWritten() override;
   void OnGammaRampPWLValueWritten() override;
@@ -999,6 +1002,15 @@ class VulkanCommandProcessor final : public CommandProcessor {
       current_samplers_vertex_;
   std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>
       current_samplers_pixel_;
+  // The shaders and the submission the current samplers were obtained for,
+  // and the fetch constants changed since then. The samplers are derived only
+  // from the shaders' sampler bindings and the fetch constants they name, so
+  // they're reused by later draws with the same shaders in the same submission
+  // while none of those fetch constants has changed.
+  const VulkanShader* current_samplers_vertex_shader_ = nullptr;
+  const VulkanShader* current_samplers_pixel_shader_ = nullptr;
+  uint64_t current_samplers_submission_ = 0;
+  uint32_t fetch_constants_changed_for_samplers_ = 0;
 
   // Cache render pass currently started in the command buffer with the
   // framebuffer.
