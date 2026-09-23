@@ -69,6 +69,9 @@ class MMIOHandler {
                      void* context, MMIOReadCallback read_callback,
                      MMIOWriteCallback write_callback);
   MMIORange* LookupRange(uint32_t virtual_address);
+  // The first range that any address in [first, last] falls in, if any; the
+  // same answer as LookupRange on each address, without visiting each one.
+  MMIORange* LookupRangeOverlapping(uint32_t first, uint32_t last);
 
   bool CheckLoad(uint32_t virtual_address, uint32_t* out_value);
   bool CheckStore(uint32_t virtual_address, uint32_t value);

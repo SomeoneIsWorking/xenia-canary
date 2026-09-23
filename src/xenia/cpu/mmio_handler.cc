@@ -98,6 +98,31 @@ MMIORange* MMIOHandler::LookupRange(uint32_t virtual_address) {
   return nullptr;
 }
 
+MMIORange* MMIOHandler::LookupRangeOverlapping(uint32_t first,
+                                               uint32_t last) {
+  for (auto& range : mapped_ranges_) {
+    const uint32_t free_bits = ~range.mask;
+    if (range.address & free_bits) {
+      // The range's address has bits the mask discards, so no address
+      // matches it.
+      continue;
+    }
+    if ((free_bits & (free_bits + 1)) == 0) {
+      // The mask keeps only high bits, so the range is one aligned block.
+      if (first <= (range.address | free_bits) && range.address <= last) {
+        return &range;
+      }
+      continue;
+    }
+    for (uint64_t address = first; address <= last; ++address) {
+      if ((uint32_t(address) & range.mask) == range.address) {
+        return &range;
+      }
+    }
+  }
+  return nullptr;
+}
+
 bool MMIOHandler::CheckLoad(uint32_t virtual_address, uint32_t* out_value) {
   for (const auto& range : mapped_ranges_) {
     if ((virtual_address & range.mask) == range.address) {

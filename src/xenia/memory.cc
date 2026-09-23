@@ -601,6 +601,11 @@ cpu::MMIORange* Memory::LookupVirtualMappedRange(uint32_t virtual_address) {
   return mmio_handler_->LookupRange(virtual_address);
 }
 
+cpu::MMIORange* Memory::LookupVirtualMappedRangeOverlapping(uint32_t first,
+                                                            uint32_t last) {
+  return mmio_handler_->LookupRangeOverlapping(first, last);
+}
+
 bool Memory::AccessViolationCallback(
     global_unique_lock_type global_lock_locked_once, void* host_address,
     bool is_write) {
