@@ -231,6 +231,10 @@ class CommandProcessor {
   // Counts one guest frame boundary (VdSwap) and the host time since the
   // previous one. Called only by the thread executing the command stream.
   void RecordGuestSwap();
+  // Holds a swap until 1 / guest_present_limit after the previous swap's
+  // deadline. A swap that arrives later is not delayed, so a slow frame is
+  // never rounded up to a pacing grid the way vblank pacing rounds it.
+  void PaceGuestSwap();
 
   // Stores the ring's read index where the guest asked the CP to report it.
   void WriteBackReadPointer(uint32_t read_index);
@@ -577,6 +581,8 @@ class CommandProcessor {
       swap_interval_buckets_{};
   // Written and read only by the thread executing the command stream.
   std::optional<std::chrono::steady_clock::time_point> last_guest_swap_time_;
+  std::optional<std::chrono::steady_clock::time_point>
+      next_guest_swap_deadline_;
 
   uint32_t primary_buffer_ptr_ = 0;
   uint32_t primary_buffer_size_ = 0;

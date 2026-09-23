@@ -26,6 +26,13 @@ DEFINE_uint64(framerate_limit, 0,
               "GPU");
 UPDATE_from_uint64(framerate_limit, 2024, 8, 31, 20, 60);
 
+DEFINE_uint32(
+    guest_present_limit, 0,
+    "Maximum guest presents per second, enforced by the command processor at "
+    "each swap. 0 = no host limit. Unlike the vblank rate, it never delays a "
+    "frame that took longer than 1 / limit to produce.",
+    "GPU");
+
 DEFINE_bool(
     gpu_allow_invalid_fetch_constants, true,
     "Allow texture and vertex fetch constants with invalid type - generally "
