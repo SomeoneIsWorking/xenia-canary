@@ -94,6 +94,7 @@ VulkanCommandProcessor::VulkanCommandProcessor(
                                graphics_system->provider())
                                ->vulkan_device()),
       deferred_command_buffer_(*this),
+      deferred_command_buffer_recorder_(*this),
       transient_descriptor_allocator_uniform_buffer_(
           static_cast<const ui::vulkan::VulkanProvider*>(
               graphics_system->provider())
@@ -1547,7 +1548,12 @@ void VulkanCommandProcessor::ShutdownContext() {
   sparse_buffer_binds_.clear();
   sparse_memory_binds_.clear();
 
+  deferred_command_buffer_recorder_.AwaitRecorded();
   deferred_command_buffer_.Reset();
+  if (submission_command_buffer_.pool != VK_NULL_HANDLE) {
+    dfn.vkDestroyCommandPool(device, submission_command_buffer_.pool, nullptr);
+    submission_command_buffer_ = {};
+  }
   for (const auto& command_buffer_pair : command_buffers_submitted_) {
     dfn.vkDestroyCommandPool(device, command_buffer_pair.second.pool, nullptr);
   }
@@ -3168,6 +3174,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+
+  // Record the commands of the previous draws into the command buffer while
+  // this and the following draws are prepared.
+  if (submission_open_ && deferred_command_buffer_.GetSizeBytes() >=
+                              kDeferredCommandsRecordedWithinSubmissionBytes) {
+    deferred_command_buffer_recorder_.Enqueue(deferred_command_buffer_);
+  }
 
   const RegisterFile& regs = *register_file_;
 
@@ -5416,11 +5429,13 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
   }
 
   if (!submission_open_) {
+    if (!BeginSubmissionCommandBuffer()) {
+      return false;
+    }
     submission_open_ = true;
 
-    // Start a new deferred command buffer - will submit it to the real one in
-    // the end of the submission (when async pipeline object creation requests
-    // are fulfilled).
+    // Start a new deferred command buffer - its commands are recorded into the
+    // real one as it fills, and in the end of the submission.
     deferred_command_buffer_.Reset();
 
     // Reset cached state of the command buffer.
@@ -5557,6 +5572,59 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
   return true;
 }
 
+bool VulkanCommandProcessor::BeginSubmissionCommandBuffer() {
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+  if (command_buffers_writable_.empty()) {
+    CommandBuffer command_buffer;
+    VkCommandPoolCreateInfo command_pool_create_info;
+    command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    command_pool_create_info.pNext = nullptr;
+    command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    command_pool_create_info.queueFamilyIndex =
+        vulkan_device->queue_family_graphics_compute();
+    if (dfn.vkCreateCommandPool(device, &command_pool_create_info, nullptr,
+                                &command_buffer.pool) != VK_SUCCESS) {
+      XELOGE("Failed to create a Vulkan command pool");
+      return false;
+    }
+    VkCommandBufferAllocateInfo command_buffer_allocate_info;
+    command_buffer_allocate_info.sType =
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    command_buffer_allocate_info.pNext = nullptr;
+    command_buffer_allocate_info.commandPool = command_buffer.pool;
+    command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    command_buffer_allocate_info.commandBufferCount = 1;
+    if (dfn.vkAllocateCommandBuffers(device, &command_buffer_allocate_info,
+                                     &command_buffer.buffer) != VK_SUCCESS) {
+      XELOGE("Failed to allocate a Vulkan command buffer");
+      dfn.vkDestroyCommandPool(device, command_buffer.pool, nullptr);
+      return false;
+    }
+    command_buffers_writable_.push_back(command_buffer);
+  }
+  CommandBuffer command_buffer = command_buffers_writable_.back();
+  if (dfn.vkResetCommandPool(device, command_buffer.pool, 0) != VK_SUCCESS) {
+    XELOGE("Failed to reset a Vulkan command pool");
+    return false;
+  }
+  VkCommandBufferBeginInfo command_buffer_begin_info;
+  command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  command_buffer_begin_info.pNext = nullptr;
+  command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  command_buffer_begin_info.pInheritanceInfo = nullptr;
+  if (dfn.vkBeginCommandBuffer(command_buffer.buffer,
+                               &command_buffer_begin_info) != VK_SUCCESS) {
+    XELOGE("Failed to begin a Vulkan command buffer");
+    return false;
+  }
+  command_buffers_writable_.pop_back();
+  submission_command_buffer_ = command_buffer;
+  deferred_command_buffer_recorder_.Begin(command_buffer.buffer);
+  return true;
+}
+
 bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
   ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
@@ -5576,35 +5644,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
         return false;
       }
       semaphores_free_.push_back(semaphore);
-    }
-    if (command_buffers_writable_.empty()) {
-      CommandBuffer command_buffer;
-      VkCommandPoolCreateInfo command_pool_create_info;
-      command_pool_create_info.sType =
-          VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-      command_pool_create_info.pNext = nullptr;
-      command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-      command_pool_create_info.queueFamilyIndex =
-          vulkan_device->queue_family_graphics_compute();
-      if (dfn.vkCreateCommandPool(device, &command_pool_create_info, nullptr,
-                                  &command_buffer.pool) != VK_SUCCESS) {
-        XELOGE("Failed to create a Vulkan command pool");
-        return false;
-      }
-      VkCommandBufferAllocateInfo command_buffer_allocate_info;
-      command_buffer_allocate_info.sType =
-          VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-      command_buffer_allocate_info.pNext = nullptr;
-      command_buffer_allocate_info.commandPool = command_buffer.pool;
-      command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-      command_buffer_allocate_info.commandBufferCount = 1;
-      if (dfn.vkAllocateCommandBuffers(device, &command_buffer_allocate_info,
-                                       &command_buffer.buffer) != VK_SUCCESS) {
-        XELOGE("Failed to allocate a Vulkan command buffer");
-        dfn.vkDestroyCommandPool(device, command_buffer.pool, nullptr);
-        return false;
-      }
-      command_buffers_writable_.push_back(command_buffer);
     }
   }
 
@@ -5685,33 +5724,24 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
 
     SubmitBarriers(true);
 
-    assert_false(command_buffers_writable_.empty());
-    CommandBuffer command_buffer = command_buffers_writable_.back();
-    if (dfn.vkResetCommandPool(device, command_buffer.pool, 0) != VK_SUCCESS) {
-      XELOGE("Failed to reset a Vulkan command pool");
-      return false;
-    }
-    VkCommandBufferBeginInfo command_buffer_begin_info;
-    command_buffer_begin_info.sType =
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    command_buffer_begin_info.pNext = nullptr;
-    command_buffer_begin_info.flags =
-        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    command_buffer_begin_info.pInheritanceInfo = nullptr;
-    if (dfn.vkBeginCommandBuffer(command_buffer.buffer,
-                                 &command_buffer_begin_info) != VK_SUCCESS) {
-      XELOGE("Failed to begin a Vulkan command buffer");
-      return false;
-    }
-    deferred_command_buffer_.Execute(command_buffer.buffer);
+    CommandBuffer command_buffer = submission_command_buffer_;
+    deferred_command_buffer_recorder_.Enqueue(deferred_command_buffer_);
+    deferred_command_buffer_recorder_.AwaitRecorded();
 
     // Record ZPD resolves before submitting.
     if (zpd_host_query_pool_) {
       zpd_host_query_pool_->RecordResolveBatch(command_buffer.buffer);
     }
 
+    // The commands have been recorded into the command buffer, and can't be
+    // recorded again, so if it can't be submitted, the host GPU can't be used
+    // further.
     if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
       XELOGE("Failed to end a Vulkan command buffer");
+      if (!device_lost_) {
+        device_lost_ = true;
+        graphics_system_->OnHostGpuLossFromAnyThread(true);
+      }
       return false;
     }
 
@@ -5732,7 +5762,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     if (submit_result != VK_SUCCESS) {
       XELOGE("Failed to submit a GPU emulation Vulkan command buffer: {}",
              vk::to_string(vk::Result(submit_result)));
-      if (vulkan_device->IsLost() && !device_lost_) {
+      if (!device_lost_) {
         device_lost_ = true;
         graphics_system_->OnHostGpuLossFromAnyThread(true);
       }
@@ -5745,7 +5775,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     }
     current_submission_wait_semaphores_.clear();
     command_buffers_submitted_.emplace_back(submission_index, command_buffer);
-    command_buffers_writable_.pop_back();
+    submission_command_buffer_ = {};
 
     submission_open_ = false;
 

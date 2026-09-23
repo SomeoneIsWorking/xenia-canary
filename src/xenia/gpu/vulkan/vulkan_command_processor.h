@@ -31,6 +31,7 @@
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/spirv_shader_translator.h"
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
+#include "xenia/gpu/vulkan/deferred_command_buffer_recorder.h"
 #include "xenia/gpu/vulkan/gears_resolve_dump_window.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
 #include "xenia/gpu/vulkan/vulkan_pipeline_cache.h"
@@ -614,6 +615,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // opposed to simply resuming after mid-frame synchronization). Returns
   // whether a submission is open currently and the device is not lost.
   bool BeginSubmission(bool is_guest_command);
+  // Takes a command pool for the submission and begins its command buffer.
+  bool BeginSubmissionCommandBuffer();
   // If is_swap is true, a full frame is closed - with, if needed, cache
   // clearing and stopping capturing. Returns whether the submission was done
   // successfully, if it has failed, leaves it open.
@@ -752,7 +755,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
 
   std::vector<CommandBuffer> command_buffers_writable_;
   std::deque<std::pair<uint64_t, CommandBuffer>> command_buffers_submitted_;
+  // The command buffer the open submission is recorded into.
+  CommandBuffer submission_command_buffer_ = {};
   DeferredCommandBuffer deferred_command_buffer_;
+  // Commands recorded in the deferred command buffer are handed over for
+  // recording into the Vulkan command buffer when they take this much space.
+  static constexpr size_t kDeferredCommandsRecordedWithinSubmissionBytes =
+      32 * 1024;
+  DeferredCommandBufferRecorder deferred_command_buffer_recorder_;
 
   std::vector<VkSparseMemoryBind> sparse_memory_binds_;
   std::vector<SparseBufferBind> sparse_buffer_binds_;

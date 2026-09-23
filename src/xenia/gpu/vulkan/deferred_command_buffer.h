@@ -33,6 +33,15 @@ class DeferredCommandBuffer {
   void Reset();
   void Execute(VkCommandBuffer command_buffer);
 
+  size_t GetSizeBytes() const {
+    return command_stream_.size() * sizeof(uintmax_t);
+  }
+  // Exchanges the recorded commands with those of another deferred command
+  // buffer.
+  void Swap(DeferredCommandBuffer& other) {
+    command_stream_.swap(other.command_stream_);
+  }
+
   // render_pass_begin->pNext of all barriers must be null.
   void CmdVkBeginRenderPass(const VkRenderPassBeginInfo* render_pass_begin,
                             VkSubpassContents contents) {
