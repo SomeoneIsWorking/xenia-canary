@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_VULKAN_VULKAN_COMMAND_PROCESSOR_H_
 #define XENIA_GPU_VULKAN_VULKAN_COMMAND_PROCESSOR_H_
 
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <cstdint>
@@ -17,8 +18,8 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <tuple>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -766,6 +767,36 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Temporary storage with reusable memory for writing image and sampler
   // descriptors.
   std::vector<VkDescriptorImageInfo> descriptor_write_image_info_;
+
+  // The layout and image infos a stage's texture descriptor set was last
+  // written with. Frame start clears the stage's descriptor-set validity, so
+  // while it is valid the set was written in the current frame, and an
+  // identical binding reuses it instead of writing a new set.
+  class WrittenTextureBindings {
+   public:
+    bool Matches(VkDescriptorSetLayout layout,
+                 const VkDescriptorImageInfo* infos, size_t count) const {
+      return layout == layout_ && count == infos_.size() &&
+             std::equal(infos, infos + count, infos_.begin(),
+                        [](const VkDescriptorImageInfo& a,
+                           const VkDescriptorImageInfo& b) {
+                          return a.sampler == b.sampler &&
+                                 a.imageView == b.imageView &&
+                                 a.imageLayout == b.imageLayout;
+                        });
+    }
+    void Record(VkDescriptorSetLayout layout,
+                const VkDescriptorImageInfo* infos, size_t count) {
+      layout_ = layout;
+      infos_.assign(infos, infos + count);
+    }
+
+   private:
+    VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorImageInfo> infos_;
+  };
+  WrittenTextureBindings written_texture_bindings_vertex_;
+  WrittenTextureBindings written_texture_bindings_pixel_;
 
   std::unique_ptr<ui::vulkan::VulkanUploadBufferPool> uniform_buffer_pool_;
 
