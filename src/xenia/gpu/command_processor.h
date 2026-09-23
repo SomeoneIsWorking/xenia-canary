@@ -215,6 +215,9 @@ class CommandProcessor {
   bool Restore(ByteStream* stream);
 
  protected:
+  // Stores the ring's read index where the guest asked the CP to report it.
+  void WriteBackReadPointer(uint32_t read_index);
+
   struct IndexBufferInfo {
     xenos::IndexFormat format = xenos::IndexFormat::kInt16;
     xenos::Endian endianness = xenos::Endian::kNone;

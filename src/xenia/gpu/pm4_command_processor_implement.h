@@ -1455,12 +1455,25 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
   // chiplets l3
   reader_.BeginPrefetchedRead<swcache::PrefetchTag::Level2>(
       GetCurrentRingReadCount());
+  // Like the hardware CP, report the read pointer after every RB_BLKSZ of the
+  // ring consumed rather than only when the batch is done: a guest waiting for
+  // ring space can then write its next commands while this batch executes,
+  // instead of the two taking turns.
+  const uint32_t report_bytes = read_ptr_update_freq_ * sizeof(uint32_t);
+  const uint32_t ring_bytes = uint32_t(reader_.capacity());
+  uint32_t reported_offset = uint32_t(reader_.read_offset());
   do {
     if (!COMMAND_PROCESSOR::ExecutePacket()) {
       // This probably should be fatal - but we're going to continue anyways.
       XELOGE("**** PRIMARY RINGBUFFER: Failed to execute packet.");
       assert_always();
       break;
+    }
+    const uint32_t offset = uint32_t(reader_.read_offset());
+    if (report_bytes &&
+        (offset + ring_bytes - reported_offset) % ring_bytes >= report_bytes) {
+      WriteBackReadPointer(offset / sizeof(uint32_t));
+      reported_offset = offset;
     }
   } while (reader_.read_count());
 
