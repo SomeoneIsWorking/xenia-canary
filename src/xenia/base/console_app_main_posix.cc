@@ -12,6 +12,8 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 
+DECLARE_bool(log_to_stdout);
+
 int main(int argc, char** argv) {
   // Declared before anything can fail: an argument error must reach stderr,
   // not a GUI dialog. has_console_attached() is isatty(stdin) here, which is
@@ -33,6 +35,14 @@ int main(int argc, char** argv) {
   // the process -- for the GPU trace tools that is the Vulkan loader chattering
   // through the debug messenger during EnumeratePhysicalDevices, long before
   // any trace file is opened, and with no output to say so.
+  // A transparent app hands its arguments, and with them its standard output,
+  // to the entry point's own parser: a test suite's Catch session lists and
+  // reports there, and a log line would corrupt that protocol. Its log still
+  // goes to the log file.
+  if (entry_info.transparent_options) {
+    cvars::log_to_stdout = false;
+  }
+
   xe::InitializeLogging(entry_info.name);
 
   std::vector<std::string> args;
