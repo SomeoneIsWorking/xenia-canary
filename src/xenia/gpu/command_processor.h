@@ -10,11 +10,14 @@
 #ifndef XENIA_GPU_COMMAND_PROCESSOR_H_
 #define XENIA_GPU_COMMAND_PROCESSOR_H_
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -138,6 +141,16 @@ class CommandProcessor {
     return guest_swap_count_.load(std::memory_order_relaxed);
   }
 
+  // HOST TIME BETWEEN CONSECUTIVE GUEST SWAPS, counted in fixed-width buckets
+  // since the first swap. A per-second swap count hides a single long frame
+  // among fast ones; these intervals show it. The last bucket holds every
+  // interval at least as long as its lower edge.
+  static constexpr uint32_t kSwapIntervalBucketMicroseconds = 100;
+  static constexpr size_t kSwapIntervalBucketCount = 1001;
+  using SwapIntervalBuckets = std::array<uint64_t, kSwapIntervalBucketCount>;
+  // A snapshot, readable from any thread while swaps are being recorded.
+  SwapIntervalBuckets swap_interval_buckets() const;
+
   Shader* active_vertex_shader() const { return active_vertex_shader_; }
   Shader* active_pixel_shader() const { return active_pixel_shader_; }
 
@@ -215,6 +228,10 @@ class CommandProcessor {
   bool Restore(ByteStream* stream);
 
  protected:
+  // Counts one guest frame boundary (VdSwap) and the host time since the
+  // previous one. Called only by the thread executing the command stream.
+  void RecordGuestSwap();
+
   // Stores the ring's read index where the guest asked the CP to report it.
   void WriteBackReadPointer(uint32_t read_index);
 
@@ -556,6 +573,10 @@ class CommandProcessor {
   // Read from other threads (the harness samples it while the GPU
   // worker advances it), so it is atomic rather than plain.
   std::atomic<uint64_t> guest_swap_count_{0};
+  std::array<std::atomic<uint64_t>, kSwapIntervalBucketCount>
+      swap_interval_buckets_{};
+  // Written and read only by the thread executing the command stream.
+  std::optional<std::chrono::steady_clock::time_point> last_guest_swap_time_;
 
   uint32_t primary_buffer_ptr_ = 0;
   uint32_t primary_buffer_size_ = 0;
