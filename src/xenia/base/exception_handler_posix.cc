@@ -11,6 +11,7 @@
 
 #include <signal.h>
 #include <cstdint>
+#include <cstring>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/host_thread_context.h"
@@ -18,11 +19,23 @@
 #include "xenia/base/math.h"
 #include "xenia/base/platform.h"
 
+#if XE_PLATFORM_MAC
+#if !XE_ARCH_ARM64
+#error "The Darwin signal context is read only for ARM64 hosts."
+#endif
+#if __DARWIN_OPAQUE_ARM_THREAD_STATE64
+#error "Pointer-authenticated (arm64e) thread states are not read."
+#endif
+#endif
+
 namespace xe {
 
 bool signal_handlers_installed_ = false;
 struct sigaction original_sigill_handler_;
 struct sigaction original_sigsegv_handler_;
+// Darwin reports a protection fault on a mapped page (KERN_PROTECTION_FAILURE)
+// as SIGBUS, and only an access to an unmapped address as SIGSEGV.
+struct sigaction original_sigbus_handler_;
 
 // This can be as large as needed, but isn't often needed.
 // As we will be sometimes firing many exceptions we want to avoid having to
@@ -33,6 +46,105 @@ constexpr size_t kMaxHandlerCount = 8;
 // Executed in order.
 std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
 
+#if XE_PLATFORM_MAC
+// The data-abort exception class of ESR_EL1 (bits 31:26), from a lower or the
+// same exception level, and its write-not-read bit.
+constexpr uint32_t kEsrDataAbortClassMask = 0b111110;
+constexpr uint32_t kEsrDataAbortClass = 0b100100;
+constexpr uint32_t kEsrWriteNotRead = UINT32_C(1) << 6;
+
+static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+                                     void* signal_context) {
+  mcontext_t mcontext =
+      reinterpret_cast<ucontext_t*>(signal_context)->uc_mcontext;
+  __darwin_arm_thread_state64& state = mcontext->__ss;
+  __darwin_arm_neon_state64& neon = mcontext->__ns;
+
+  HostThreadContext thread_context;
+  std::memcpy(thread_context.x, state.__x, sizeof(state.__x));
+  thread_context.x[29] = state.__fp;
+  thread_context.x[30] = state.__lr;
+  thread_context.sp = state.__sp;
+  thread_context.pc = state.__pc;
+  thread_context.pstate = state.__cpsr;
+  thread_context.fpsr = neon.__fpsr;
+  thread_context.fpcr = neon.__fpcr;
+  std::memcpy(thread_context.v, neon.__v, sizeof(thread_context.v));
+
+  Exception ex;
+  switch (signal_number) {
+    case SIGILL:
+      ex.InitializeIllegalInstruction(&thread_context);
+      break;
+    case SIGSEGV:
+    case SIGBUS: {
+      uint32_t esr = mcontext->__es.__esr;
+      Exception::AccessViolationOperation access_violation_operation =
+          Exception::AccessViolationOperation::kUnknown;
+      if (((esr >> 26) & kEsrDataAbortClassMask) == kEsrDataAbortClass) {
+        access_violation_operation =
+            (esr & kEsrWriteNotRead)
+                ? Exception::AccessViolationOperation::kWrite
+                : Exception::AccessViolationOperation::kRead;
+      } else {
+        bool instruction_is_store;
+        if (IsArm64LoadPrefetchStore(
+                *reinterpret_cast<const uint32_t*>(state.__pc),
+                instruction_is_store)) {
+          access_violation_operation =
+              instruction_is_store ? Exception::AccessViolationOperation::kWrite
+                                   : Exception::AccessViolationOperation::kRead;
+        } else {
+          assert_always(
+              "The exception is not a Data Abort and the faulting instruction "
+              "is not a known load, prefetch or store instruction");
+        }
+      }
+      ex.InitializeAccessViolation(
+          &thread_context, reinterpret_cast<uint64_t>(signal_info->si_addr),
+          access_violation_operation);
+    } break;
+    default:
+      assert_unhandled_case(signal_number);
+  }
+
+  for (size_t i = 0; i < xe::countof(handlers_) && handlers_[i].first; ++i) {
+    if (handlers_[i].first(&ex, handlers_[i].second)) {
+      // Exception handled.
+      uint32_t modified_register_index;
+      uint32_t modified_x_registers_remaining = ex.modified_x_registers();
+      while (xe::bit_scan_forward(modified_x_registers_remaining,
+                                  &modified_register_index)) {
+        modified_x_registers_remaining &=
+            ~(UINT32_C(1) << modified_register_index);
+        uint64_t value = thread_context.x[modified_register_index];
+        if (modified_register_index == 29) {
+          state.__fp = value;
+        } else if (modified_register_index == 30) {
+          state.__lr = value;
+        } else {
+          state.__x[modified_register_index] = value;
+        }
+      }
+      state.__sp = thread_context.sp;
+      state.__pc = thread_context.pc;
+      state.__cpsr = uint32_t(thread_context.pstate);
+      neon.__fpsr = thread_context.fpsr;
+      neon.__fpcr = thread_context.fpcr;
+      uint32_t modified_v_registers_remaining = ex.modified_v_registers();
+      while (xe::bit_scan_forward(modified_v_registers_remaining,
+                                  &modified_register_index)) {
+        modified_v_registers_remaining &=
+            ~(UINT32_C(1) << modified_register_index);
+        std::memcpy(&neon.__v[modified_register_index],
+                    &thread_context.v[modified_register_index],
+                    sizeof(vec128_t));
+      }
+      return;
+    }
+  }
+}
+#else
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
   mcontext_t& mcontext =
@@ -222,6 +334,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
     }
   }
 }
+#endif  // XE_PLATFORM_MAC
 
 void ExceptionHandler::Install(Handler fn, void* data) {
   if (!signal_handlers_installed_) {
@@ -237,6 +350,11 @@ void ExceptionHandler::Install(Handler fn, void* data) {
     if (sigaction(SIGSEGV, &signal_handler, &original_sigsegv_handler_) != 0) {
       assert_always("Failed to install new SIGSEGV handler");
     }
+#if XE_PLATFORM_MAC
+    if (sigaction(SIGBUS, &signal_handler, &original_sigbus_handler_) != 0) {
+      assert_always("Failed to install new SIGBUS handler");
+    }
+#endif
     signal_handlers_installed_ = true;
   }
 
@@ -277,6 +395,11 @@ void ExceptionHandler::Uninstall(Handler fn, void* data) {
       if (sigaction(SIGSEGV, &original_sigsegv_handler_, NULL) != 0) {
         assert_always("Failed to restore original SIGSEGV handler");
       }
+#if XE_PLATFORM_MAC
+      if (sigaction(SIGBUS, &original_sigbus_handler_, NULL) != 0) {
+        assert_always("Failed to restore original SIGBUS handler");
+      }
+#endif
       signal_handlers_installed_ = false;
     }
   }

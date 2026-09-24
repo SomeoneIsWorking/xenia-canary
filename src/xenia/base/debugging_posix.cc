@@ -16,12 +16,28 @@
 #include <mutex>
 #include <sstream>
 
+#include "xenia/base/platform.h"
 #include "xenia/base/string_buffer.h"
+
+#if XE_PLATFORM_MAC
+#include <sys/sysctl.h>
+#include <unistd.h>
+#endif
 
 namespace xe {
 namespace debugging {
 
 bool IsDebuggerAttached() {
+#if XE_PLATFORM_MAC
+  // https://developer.apple.com/library/archive/qa/qa1361/_index.html
+  kinfo_proc info{};
+  int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+  size_t size = sizeof(info);
+  if (sysctl(mib, sizeof(mib) / sizeof(*mib), &info, &size, nullptr, 0) != 0) {
+    return false;
+  }
+  return (info.kp_proc.p_flag & P_TRACED) != 0;
+#else
   std::ifstream proc_status_stream("/proc/self/status");
   if (!proc_status_stream.is_open()) {
     return false;
@@ -38,6 +54,7 @@ bool IsDebuggerAttached() {
     }
   }
   return false;
+#endif
 }
 
 void Break() {
