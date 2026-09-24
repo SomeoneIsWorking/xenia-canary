@@ -29,6 +29,11 @@ class A64CodeCache : public CodeCacheBase<A64CodeCache> {
 
   void* LookupUnwindInfo(uint64_t host_pc) override { return nullptr; }
 
+  // Nothing below 4 GB is reachable on every host (a 64-bit Darwin process
+  // reserves it all), so emitted code addresses the indirection table and
+  // its entries from bases kept in the backend context.
+  static constexpr bool kRelocatableLayout = true;
+
   // CRTP hooks for CodeCacheBase.
   void FillCode(void* write_address, size_t size);
   void FlushCodeRange(void* address, size_t size);

@@ -80,6 +80,13 @@ struct EmitFunctionInfo {
 //                     void* code_execute_address, size_t code_size)
 //     Optional hook called after code is placed outside the critical section
 //     (used for VTune integration on x64). Default is no-op.
+//
+//   static constexpr bool kRelocatableLayout
+//     Optional. False (the default) maps the indirection table and generated
+//     code at the fixed addresses below 4 GB that x64 code embeds; an
+//     indirection slot then holds the host code address itself. True lets the
+//     host place both anywhere; a slot then holds the code's offset from the
+//     generated-code execute base, and emitted code adds that base back.
 template <typename Derived>
 class CodeCacheBase : public CodeCache {
  public:
@@ -105,11 +112,30 @@ class CodeCacheBase : public CodeCache {
 
   const std::filesystem::path& file_name() const override { return file_name_; }
   uintptr_t execute_base_address() const override {
-    return kGeneratedCodeExecuteBase;
+    return reinterpret_cast<uintptr_t>(generated_code_execute_base_);
   }
   size_t total_size() const override { return kGeneratedCodeSize; }
 
   bool has_indirection_table() { return indirection_table_base_ != nullptr; }
+
+  // The host address of the indirection slot of guest address 0; the slot of
+  // a guest address is this plus the address. Only slots of guest addresses
+  // at or above kIndirectionTableBase exist.
+  uintptr_t indirection_table_origin() const {
+    return reinterpret_cast<uintptr_t>(indirection_table_base_) -
+           kIndirectionTableBase;
+  }
+
+  // The host address an indirection entry of 0 denotes: an entry is the
+  // target's offset from this base.
+  uintptr_t indirection_entry_base() const { return indirection_entry_base_; }
+
+  uint32_t EncodeGuestEntry(const void* host_code) const override {
+    const uintptr_t offset =
+        reinterpret_cast<uintptr_t>(host_code) - indirection_entry_base_;
+    assert_true(offset <= UINT32_MAX);
+    return static_cast<uint32_t>(offset);
+  }
 
   void set_indirection_default(uint32_t default_value) {
     indirection_default_value_ = default_value;
@@ -215,11 +241,12 @@ class CodeCacheBase : public CodeCache {
           tail_write_address,
           static_cast<size_t>(end_write_address - tail_write_address));
 
-      // Flush I-cache for code and fill regions.
-      self().FlushCodeRange(code_write_address, func_info.code_size.total);
+      // Flush I-cache for code and fill regions at the addresses they execute
+      // from, which differ from the written ones when the views are separate.
+      self().FlushCodeRange(code_execute_address, func_info.code_size.total);
       if (tail_write_address < end_write_address) {
         self().FlushCodeRange(
-            tail_write_address,
+            ExecuteAddressOf(tail_write_address),
             static_cast<size_t>(end_write_address - tail_write_address));
       }
 
@@ -234,11 +261,28 @@ class CodeCacheBase : public CodeCache {
 
     // Fix up indirection table.
     if (guest_address && indirection_table_base_) {
-      uint32_t* indirection_slot = reinterpret_cast<uint32_t*>(
-          indirection_table_base_ + (guest_address - kIndirectionTableBase));
-      *indirection_slot =
-          uint32_t(reinterpret_cast<uint64_t>(code_execute_address));
+      AddIndirection(guest_address, EncodeGuestEntry(code_execute_address));
     }
+  }
+
+  // Reserves length bytes of executable memory beside the generated code, for
+  // code the host writes itself later. The block is filled with traps; write
+  // through write_address_out and flush the execute range after each change.
+  void ReserveHostCode(size_t length, void*& execute_address_out,
+                       void*& write_address_out) {
+    size_t high_mark;
+    uint8_t* write_address;
+    {
+      auto global_lock = global_critical_region_.Acquire();
+      write_address = generated_code_write_base_ + generated_code_offset_;
+      generated_code_offset_ += xe::round_up(length, 16);
+      high_mark = generated_code_offset_;
+    }
+    EnsureCommitted(high_mark);
+    self().FillCode(write_address, length);
+    execute_address_out = ExecuteAddressOf(write_address);
+    write_address_out = write_address;
+    self().FlushCodeRange(execute_address_out, length);
   }
 
   uint32_t PlaceData(const void* data, size_t length) {
@@ -298,6 +342,7 @@ class CodeCacheBase : public CodeCache {
   static const uintptr_t kGeneratedCodeWriteBase =
       kGeneratedCodeExecuteBase + kGeneratedCodeSize + 1;
   static constexpr size_t kMaximumFunctionCount = 1000000;
+  static constexpr bool kRelocatableLayout = false;
 
   struct UnwindReservation {
     size_t data_size = 0;
@@ -308,10 +353,20 @@ class CodeCacheBase : public CodeCache {
   CodeCacheBase() = default;
 
   bool Initialize() {
-    indirection_table_base_ = reinterpret_cast<uint8_t*>(xe::memory::AllocFixed(
-        reinterpret_cast<void*>(kIndirectionTableBase), kIndirectionTableSize,
-        xe::memory::AllocationType::kReserve,
-        xe::memory::PageAccess::kReadWrite));
+    // A relocatable layout lets the host choose every address.
+    constexpr bool kRelocatable = Derived::kRelocatableLayout;
+    void* const table_request =
+        kRelocatable ? nullptr : reinterpret_cast<void*>(kIndirectionTableBase);
+    void* const execute_request =
+        kRelocatable ? nullptr
+                     : reinterpret_cast<void*>(kGeneratedCodeExecuteBase);
+    void* const write_request =
+        kRelocatable ? nullptr
+                     : reinterpret_cast<void*>(kGeneratedCodeWriteBase);
+    indirection_table_base_ = reinterpret_cast<uint8_t*>(
+        xe::memory::AllocFixed(table_request, kIndirectionTableSize,
+                               xe::memory::AllocationType::kReserve,
+                               xe::memory::PageAccess::kReadWrite));
     if (!indirection_table_base_) {
       XELOGE("Unable to allocate code cache indirection table");
       XELOGE(
@@ -334,9 +389,8 @@ class CodeCacheBase : public CodeCache {
     if (xe::memory::IsWritableExecutableMemoryPreferred()) {
       generated_code_execute_base_ =
           reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-              mapping_, reinterpret_cast<void*>(kGeneratedCodeExecuteBase),
-              kGeneratedCodeSize, xe::memory::PageAccess::kExecuteReadWrite,
-              0));
+              mapping_, execute_request, kGeneratedCodeSize,
+              xe::memory::PageAccess::kExecuteReadWrite, 0));
       generated_code_write_base_ = generated_code_execute_base_;
       if (!generated_code_execute_base_ || !generated_code_write_base_) {
         XELOGE("Unable to allocate code cache generated code storage");
@@ -348,14 +402,12 @@ class CodeCacheBase : public CodeCache {
         return false;
       }
     } else {
-      generated_code_execute_base_ =
-          reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-              mapping_, reinterpret_cast<void*>(kGeneratedCodeExecuteBase),
-              kGeneratedCodeSize, xe::memory::PageAccess::kExecuteReadOnly, 0));
-      generated_code_write_base_ =
-          reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-              mapping_, reinterpret_cast<void*>(kGeneratedCodeWriteBase),
-              kGeneratedCodeSize, xe::memory::PageAccess::kReadWrite, 0));
+      generated_code_execute_base_ = reinterpret_cast<uint8_t*>(
+          xe::memory::MapFileView(mapping_, execute_request, kGeneratedCodeSize,
+                                  xe::memory::PageAccess::kExecuteReadOnly, 0));
+      generated_code_write_base_ = reinterpret_cast<uint8_t*>(
+          xe::memory::MapFileView(mapping_, write_request, kGeneratedCodeSize,
+                                  xe::memory::PageAccess::kReadWrite, 0));
       if (!generated_code_execute_base_ || !generated_code_write_base_) {
         XELOGE("Unable to allocate code cache generated code storage");
         XELOGE(
@@ -367,6 +419,19 @@ class CodeCacheBase : public CodeCache {
             uint64_t(kGeneratedCodeWriteBase + kGeneratedCodeSize));
         return false;
       }
+    }
+
+    // Fixed-layout entries are absolute addresses below 4 GB.
+    indirection_entry_base_ =
+        kRelocatable ? reinterpret_cast<uintptr_t>(generated_code_execute_base_)
+                     : 0;
+    if (kRelocatable) {
+      XELOGI(
+          "Code cache: indirection table at {:016X}, generated code executes "
+          "at {:016X} (written at {:016X})",
+          reinterpret_cast<uint64_t>(indirection_table_base_),
+          reinterpret_cast<uint64_t>(generated_code_execute_base_),
+          reinterpret_cast<uint64_t>(generated_code_write_base_));
     }
 
     generated_code_map_.reserve(kMaximumFunctionCount);
@@ -385,12 +450,18 @@ class CodeCacheBase : public CodeCache {
   uint8_t* indirection_table_base_ = nullptr;
   uint8_t* generated_code_execute_base_ = nullptr;
   uint8_t* generated_code_write_base_ = nullptr;
+  uintptr_t indirection_entry_base_ = 0;
   size_t generated_code_offset_ = 0;
   std::atomic<size_t> generated_code_commit_mark_ = {0};
   std::vector<std::pair<uint64_t, GuestFunction*>> generated_code_map_;
 
  private:
   Derived& self() { return static_cast<Derived&>(*this); }
+
+  uint8_t* ExecuteAddressOf(uint8_t* write_address) const {
+    return generated_code_execute_base_ +
+           (write_address - generated_code_write_base_);
+  }
 
   void EnsureCommitted(size_t high_mark) {
     using namespace xe::literals;

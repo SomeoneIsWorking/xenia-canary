@@ -307,8 +307,8 @@ bool Processor::RemoveGuestCallRedirect(uint32_t address) {
   auto* cache = backend_->code_cache();
   auto* original = dynamic_cast<GuestFunction*>(QueryFunction(address));
   if (original && original->machine_code()) {
-    const auto host_address = static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(original->machine_code()));
+    const uint32_t host_address =
+        cache->EncodeGuestEntry(original->machine_code());
     if (!cache->RedirectGuestEntry(address, host_address)) {
       return false;
     }
