@@ -30,6 +30,19 @@ bool IsWritableExecutableMemoryPreferred() {
          cvars::writable_executable_memory;
 }
 
+#if !(XE_PLATFORM_MAC && XE_ARCH_ARM64)
+// Only Apple silicon needs a JIT region (memory_posix.cc).
+bool IsJitRegionRequired() { return false; }
+
+void* AllocJitRegion(size_t length) { return nullptr; }
+
+bool FreeJitRegion(void* base_address, size_t length) { return false; }
+
+JitWriteScope::JitWriteScope() = default;
+
+JitWriteScope::~JitWriteScope() = default;
+#endif
+
 using xe::swcache::CacheLine;
 
 #if XE_ARCH_AMD64

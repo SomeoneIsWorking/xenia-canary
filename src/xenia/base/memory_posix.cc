@@ -26,6 +26,7 @@
 #if XE_PLATFORM_MAC
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <pthread.h>
 
 #include <atomic>
 
@@ -108,6 +109,37 @@ PageAccess ToXeniaProtectFlags(const char* protection) {
   }
   return PageAccess::kNoAccess;
 }
+
+#if XE_PLATFORM_MAC && XE_ARCH_ARM64
+namespace {
+// Open JitWriteScopes on this thread.
+thread_local int jit_write_depth = 0;
+}  // namespace
+
+bool IsJitRegionRequired() { return true; }
+
+void* AllocJitRegion(size_t length) {
+  void* region = mmap(nullptr, length, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT, -1, 0);
+  return region == MAP_FAILED ? nullptr : region;
+}
+
+bool FreeJitRegion(void* base_address, size_t length) {
+  return munmap(base_address, length) == 0;
+}
+
+JitWriteScope::JitWriteScope() {
+  if (jit_write_depth++ == 0) {
+    pthread_jit_write_protect_np(0);
+  }
+}
+
+JitWriteScope::~JitWriteScope() {
+  if (--jit_write_depth == 0) {
+    pthread_jit_write_protect_np(1);
+  }
+}
+#endif
 
 bool IsWritableExecutableMemorySupported() {
 #if XE_PLATFORM_MAC

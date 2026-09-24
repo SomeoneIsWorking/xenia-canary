@@ -89,6 +89,30 @@ bool IsWritableExecutableMemorySupported();
 // writable executable memory on a system with it.
 bool IsWritableExecutableMemoryPreferred();
 
+// Whether generated code must live in one region from AllocJitRegion and be
+// written only inside a JitWriteScope: Apple silicon executes a page only when
+// it is signed or mapped with MAP_JIT, which neither a file view nor a second
+// writable view of one can be.
+bool IsJitRegionRequired();
+
+// Allocates length bytes of writable executable memory for generated code at
+// an address the host chooses; nullptr on failure or where
+// IsJitRegionRequired is false.
+void* AllocJitRegion(size_t length);
+
+// Releases a region from AllocJitRegion.
+bool FreeJitRegion(void* base_address, size_t length);
+
+// Makes JIT regions writable, and not executable, on this thread while it
+// lives; scopes nest. Does nothing where IsJitRegionRequired is false.
+class JitWriteScope {
+ public:
+  JitWriteScope();
+  ~JitWriteScope();
+  JitWriteScope(const JitWriteScope&) = delete;
+  JitWriteScope& operator=(const JitWriteScope&) = delete;
+};
+
 // Allocates a block of memory at the given page-aligned base address.
 // Fails if the memory is not available.
 // Specify nullptr for base_address to leave it up to the system.
