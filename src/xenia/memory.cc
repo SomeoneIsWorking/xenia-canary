@@ -9,6 +9,7 @@
 
 #include "xenia/memory.h"
 
+#include <atomic>
 #include <cstring>
 #include <random>
 
@@ -1828,18 +1829,23 @@ xe::memory::PageAccess BaseHeap::QueryRangeAccess(uint32_t low_address,
   uint32_t high_page_number = (high_address - heap_base_) >> page_size_shift_;
   bool all_readable = true;
   bool all_writable = true;
-  {
-    auto global_lock = global_critical_region_.Acquire();
-    for (uint32_t i = low_page_number; i <= high_page_number; ++i) {
-      uint32_t page_protect = page_table_[i].current_protect;
-      if (!(page_protect & kMemoryProtectRead)) {
-        all_readable = false;
-      }
-      // Check if page is writable in any form (Write or WriteCombine)
-      if (!(page_protect & kMemoryProtectWrite) &&
-          !(page_protect & kMemoryProtectWriteCombine)) {
-        all_writable = false;
-      }
+  // No global lock: the answer is a snapshot that another thread may change as
+  // soon as it is returned, so holding the lock while reading only contended
+  // with every thread that allocates, protects, or runs the GPU command
+  // processor. The page table never moves, and each entry is loaded whole, so
+  // a concurrent update is seen either before or after it.
+  for (uint32_t i = low_page_number; i <= high_page_number; ++i) {
+    PageEntry page;
+    page.qword = std::atomic_ref<uint64_t>(page_table_[i].qword)
+                     .load(std::memory_order_relaxed);
+    uint32_t page_protect = page.current_protect;
+    if (!(page_protect & kMemoryProtectRead)) {
+      all_readable = false;
+    }
+    // Check if page is writable in any form (Write or WriteCombine)
+    if (!(page_protect & kMemoryProtectWrite) &&
+        !(page_protect & kMemoryProtectWriteCombine)) {
+      all_writable = false;
     }
   }
   if (all_readable && all_writable) {
