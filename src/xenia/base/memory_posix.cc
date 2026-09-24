@@ -23,6 +23,15 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 
+#if XE_PLATFORM_MAC
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+
+#include <atomic>
+
+#include "third_party/fmt/include/fmt/format.h"
+#endif
+
 #if XE_PLATFORM_ANDROID
 #include <dlfcn.h>
 #include <linux/ashmem.h>
@@ -110,6 +119,27 @@ struct MappedFileRange {
 std::vector<MappedFileRange> mapped_file_ranges;
 std::mutex g_mapped_file_ranges_mutex;
 
+// Maps at base_address only if the range is free, as MAP_FIXED_NOREPLACE does.
+// Without that flag the kernel treats base_address as a hint and may place the
+// mapping elsewhere; such a mapping is released and the request fails.
+static void* MapAtRequestedAddress(void* base_address, size_t length, int prot,
+                                   int flags, int fd, off_t offset) {
+#ifdef MAP_FIXED_NOREPLACE
+  if (base_address != nullptr) {
+    flags |= MAP_FIXED_NOREPLACE;
+  }
+#endif
+  void* result = mmap(base_address, length, prot, flags, fd, offset);
+  if (result == MAP_FAILED) {
+    return nullptr;
+  }
+  if (base_address != nullptr && result != base_address) {
+    munmap(result, length);
+    return nullptr;
+  }
+  return result;
+}
+
 void* AllocFixed(void* base_address, size_t length,
                  AllocationType allocation_type, PageAccess access) {
   // mmap does not support reserve / commit, so ignore allocation_type.
@@ -123,17 +153,9 @@ void* AllocFixed(void* base_address, size_t length,
       }
       return nullptr;
     }
-#ifdef MAP_FIXED_NOREPLACE
-    flags |= MAP_FIXED_NOREPLACE;
-#endif
   }
 
-  void* result = mmap(base_address, length, prot, flags, -1, 0);
-
-  if (result != MAP_FAILED) {
-    return result;
-  }
-  return nullptr;
+  return MapAtRequestedAddress(base_address, length, prot, flags, -1, 0);
 }
 
 bool DeallocFixed(void* base_address, size_t length,
@@ -178,6 +200,64 @@ bool Protect(void* base_address, size_t length, PageAccess access,
   return mprotect(base_address, length, prot) == 0;
 }
 
+#if XE_PLATFORM_MAC
+static PageAccess ToXeniaProtectFlags(vm_prot_t protection) {
+  bool read = protection & VM_PROT_READ;
+  bool write = protection & VM_PROT_WRITE;
+  bool execute = protection & VM_PROT_EXECUTE;
+  if (read && write && execute) {
+    return PageAccess::kExecuteReadWrite;
+  }
+  if (read && execute) {
+    return PageAccess::kExecuteReadOnly;
+  }
+  if (read && write) {
+    return PageAccess::kReadWrite;
+  }
+  if (read) {
+    return PageAccess::kReadOnly;
+  }
+  return PageAccess::kNoAccess;
+}
+
+// The region containing address, from the kernel's map of this task.
+static bool QueryRegion(mach_vm_address_t address, mach_vm_address_t& begin,
+                        mach_vm_address_t& end, PageAccess& access) {
+  mach_vm_address_t region_address = address;
+  mach_vm_size_t region_size = 0;
+  vm_region_basic_info_data_64_t info;
+  mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object_name = MACH_PORT_NULL;
+  if (mach_vm_region(mach_task_self(), &region_address, &region_size,
+                     VM_REGION_BASIC_INFO_64,
+                     reinterpret_cast<vm_region_info_t>(&info), &count,
+                     &object_name) != KERN_SUCCESS ||
+      region_address > address) {
+    return false;
+  }
+  begin = region_address;
+  end = region_address + region_size;
+  access = ToXeniaProtectFlags(info.protection);
+  return true;
+}
+
+bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+  auto address = reinterpret_cast<mach_vm_address_t>(base_address);
+  mach_vm_address_t begin, end;
+  if (!QueryRegion(address, begin, end, access_out)) {
+    return false;
+  }
+  // Extend over the following regions with the same protection.
+  mach_vm_address_t next_begin, next_end;
+  PageAccess next_access;
+  while (QueryRegion(end, next_begin, next_end, next_access) &&
+         next_begin == end && next_access == access_out) {
+    end = next_end;
+  }
+  length = size_t(end - address);
+  return true;
+}
+#else
 bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
   // No generic POSIX solution exists. The Linux solution should work on all
   // Linux kernel based OS, including Android.
@@ -225,6 +305,7 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
   memory_maps.close();
   return false;
 }
+#endif  // XE_PLATFORM_MAC
 
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
                                           size_t length, PageAccess access,
@@ -270,7 +351,16 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
       return kFileMappingHandleInvalid;
   }
   oflag |= O_CREAT;
+#if XE_PLATFORM_MAC
+  // Darwin limits shared memory names to PSHMNAMLEN (31) characters. The name
+  // is removed below before anything could reopen it, so a short name unique
+  // to this process and call is enough.
+  static std::atomic<uint32_t> darwin_mapping_serial{0};
+  std::filesystem::path full_path =
+      fmt::format("/xe{}.{}", getpid(), darwin_mapping_serial++);
+#else
   auto full_path = "/" / path;
+#endif
   int ret = shm_open(full_path.c_str(), oflag, 0777);
   if (ret < 0) {
     return kFileMappingHandleInvalid;
@@ -311,16 +401,10 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
                   PageAccess access, size_t file_offset) {
   uint32_t prot = ToPosixProtectFlags(access);
 
-  int flags = MAP_SHARED;
-  if (base_address != nullptr) {
-#ifdef MAP_FIXED_NOREPLACE
-    flags |= MAP_FIXED_NOREPLACE;
-#endif
-  }
+  void* result = MapAtRequestedAddress(base_address, length, prot, MAP_SHARED,
+                                       handle, off_t(file_offset));
 
-  void* result = mmap(base_address, length, prot, flags, handle, file_offset);
-
-  if (result != MAP_FAILED) {
+  if (result != nullptr) {
     std::lock_guard guard(g_mapped_file_ranges_mutex);
     mapped_file_ranges.push_back(
         {reinterpret_cast<uintptr_t>(result),

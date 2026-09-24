@@ -12,6 +12,7 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/chrono_steady_cast.h"
 #include "xenia/base/platform.h"
+#include "xenia/base/string_util.h"
 #include "xenia/base/threading_timer_queue.h"
 
 #include <pthread.h>
@@ -19,8 +20,8 @@
 #include <semaphore.h>
 #include <signal.h>
 #include <sys/resource.h>
-#include <sys/syscall.h>
 #include <unistd.h>
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <ctime>
@@ -31,7 +32,13 @@
 #include <dlfcn.h>
 
 #include "xenia/base/main_android.h"
-#include "xenia/base/string_util.h"
+#endif
+
+#if XE_PLATFORM_MAC
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#else
+#include <sys/syscall.h>
 #endif
 
 #if XE_PLATFORM_LINUX
@@ -103,6 +110,24 @@ enum class SignalType {
   k_Count
 };
 
+#if XE_PLATFORM_MAC
+// Darwin has no real-time signals; its two user signals carry the two kinds.
+constexpr std::array<int, static_cast<size_t>(SignalType::k_Count)>
+    kDarwinThreadSignals = {SIGUSR1, SIGUSR2};
+
+int GetSystemSignal(SignalType num) {
+  return kDarwinThreadSignals[static_cast<size_t>(num)];
+}
+
+SignalType GetSystemSignalType(int num) {
+  for (size_t i = 0; i < kDarwinThreadSignals.size(); ++i) {
+    if (kDarwinThreadSignals[i] == num) {
+      return static_cast<SignalType>(i);
+    }
+  }
+  return SignalType::k_Count;
+}
+#else
 int GetSystemSignal(SignalType num) {
   auto result = SIGRTMIN + static_cast<int>(num);
   assert_true(result < SIGRTMAX);
@@ -112,6 +137,81 @@ int GetSystemSignal(SignalType num) {
 SignalType GetSystemSignalType(int num) {
   return static_cast<SignalType>(num - SIGRTMIN);
 }
+#endif
+
+// The kernel's identifier of the calling thread: its TID on Linux, which
+// setpriority accepts, and its Mach thread port on Darwin.
+static uint32_t QuerySystemThreadId() {
+#if XE_PLATFORM_MAC
+  return static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
+#else
+  return static_cast<uint32_t>(syscall(SYS_gettid));
+#endif
+}
+
+// Makes a robust mutex whose owner died usable again. Darwin has no robust
+// mutexes, so a lock there never reports a dead owner.
+static void RecoverDeadOwner(pthread_mutex_t* mutex) {
+#if XE_PLATFORM_MAC
+  (void)mutex;
+#else
+  pthread_mutex_consistent(mutex);
+#endif
+}
+
+// A counting semaphore a signal handler may wait on. Darwin does not implement
+// unnamed POSIX semaphores (sem_init fails with ENOSYS), so it uses a Mach
+// semaphore, whose wait and signal are kernel traps like sem_wait and sem_post.
+class SignalSafeSemaphore {
+ public:
+  SignalSafeSemaphore() {
+#if XE_PLATFORM_MAC
+    kern_return_t result =
+        semaphore_create(mach_task_self(), &semaphore_, SYNC_POLICY_FIFO, 0);
+    assert_true(result == KERN_SUCCESS);
+#else
+    sem_init(&semaphore_, 0, 0);
+#endif
+  }
+  SignalSafeSemaphore(const SignalSafeSemaphore&) = delete;
+  SignalSafeSemaphore& operator=(const SignalSafeSemaphore&) = delete;
+  ~SignalSafeSemaphore() {
+#if XE_PLATFORM_MAC
+    semaphore_destroy(mach_task_self(), semaphore_);
+#else
+    sem_destroy(&semaphore_);
+#endif
+  }
+
+  void Post() {
+#if XE_PLATFORM_MAC
+    semaphore_signal(semaphore_);
+#else
+    sem_post(&semaphore_);
+#endif
+  }
+
+  void Wait() {
+#if XE_PLATFORM_MAC
+    kern_return_t result;
+    do {
+      result = semaphore_wait(semaphore_);
+    } while (result == KERN_ABORTED);
+#else
+    int ret;
+    do {
+      ret = sem_wait(&semaphore_);
+    } while (ret == -1 && errno == EINTR);
+#endif
+  }
+
+ private:
+#if XE_PLATFORM_MAC
+  semaphore_t semaphore_ = 0;
+#else
+  sem_t semaphore_;
+#endif
+};
 
 std::array<std::atomic<bool>, static_cast<size_t>(SignalType::k_Count)>
     signal_handler_installed = {};
@@ -137,10 +237,8 @@ void install_signal_handler(SignalType type) {
 // TODO(dougvj)
 void EnableAffinityConfiguration() {}
 
-// uint64_t ticks() { return mach_absolute_time(); }
-
 uint32_t current_thread_system_id() {
-  thread_local const uint32_t tid = static_cast<uint32_t>(syscall(SYS_gettid));
+  thread_local const uint32_t tid = QuerySystemThreadId();
   return tid;
 }
 
@@ -230,7 +328,9 @@ class PosixConditionBase {
     // Initialize as robust mutex to handle thread termination gracefully
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
+#if !XE_PLATFORM_MAC
     pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+#endif
 
     // Get the native handle and set it as robust
     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
@@ -251,7 +351,7 @@ class PosixConditionBase {
     int lock_result = pthread_mutex_lock(native_mutex);
     if (lock_result == EOWNERDEAD) {
       // Recover from dead owner
-      pthread_mutex_consistent(native_mutex);
+      RecoverDeadOwner(native_mutex);
     } else if (lock_result != 0) {
       return WaitResult::kFailed;
     }
@@ -315,7 +415,7 @@ class PosixConditionBase {
           // Successfully acquired lock or recovered from dead owner
           if (result == EOWNERDEAD) {
             // Make mutex consistent after previous owner died
-            pthread_mutex_consistent(native_mutex);
+            RecoverDeadOwner(native_mutex);
           }
           locks.emplace_back(handles[i]->mutex_, std::adopt_lock);
         } else {
@@ -606,12 +706,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
         signaled_(false),
         exit_code_(0),
         state_(State::kUninitialized),
-        suspend_count_(0) {
-    sem_init(&suspend_sem_, 0, 0);
-#if XE_PLATFORM_ANDROID
-    android_pre_api_26_name_[0] = '\0';
-#endif
-  }
+        suspend_count_(0) {}
   bool Initialize(Thread::CreationParameters params,
                   ThreadStartData* start_data) {
     start_data->create_suspended = params.create_suspended;
@@ -647,16 +742,11 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   /// Thread::GetCurrentThread() on the main thread
   explicit PosixCondition(pthread_t thread)
       : thread_(thread),
-        tid_(static_cast<pid_t>(syscall(SYS_gettid))),
+        tid_(static_cast<pid_t>(QuerySystemThreadId())),
         signaled_(false),
         exit_code_(0),
         state_(State::kRunning),
-        suspend_count_(0) {
-    sem_init(&suspend_sem_, 0, 0);
-#if XE_PLATFORM_ANDROID
-    android_pre_api_26_name_[0] = '\0';
-#endif
-  }
+        suspend_count_(0) {}
 
   ~PosixCondition() override {
     // FIXME(RodoMa92): This causes random crashes.
@@ -689,18 +779,22 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     std::unique_lock lock(state_mutex_);
     if (state_ != State::kUninitialized && state_ != State::kFinished) {
 #if XE_PLATFORM_ANDROID
-      // pthread_getname_np was added in API 26 - below that, store the name in
-      // this object, which may be only modified through Xenia threading, but
-      // should be enough in most cases.
+      // pthread_getname_np was added in API 26 - below that, the name stored
+      // in this object is the thread's name.
       if (android_pthread_getname_np_) {
         if (android_pthread_getname_np_(thread_, result.data(),
                                         result.size() - 1) != 0) {
           assert_always();
         }
       } else {
-        std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
-        std::strcpy(result.data(), android_pre_api_26_name_);
+        std::lock_guard<std::mutex> lock(stored_name_mutex_);
+        std::strcpy(result.data(), stored_name_);
       }
+#elif XE_PLATFORM_MAC
+      // Darwin names only the calling thread, so the stored name is the one
+      // most recently given, whichever thread gave it.
+      std::lock_guard<std::mutex> lock(stored_name_mutex_);
+      std::strcpy(result.data(), stored_name_);
 #else
       if (pthread_getname_np(thread_, result.data(), result.size() - 1) != 0) {
         assert_always();
@@ -714,26 +808,60 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     WaitStarted();
     std::unique_lock<std::mutex> lock(state_mutex_);
     if (state_ != State::kUninitialized && state_ != State::kFinished) {
+#if XE_PLATFORM_MAC
+      if (pthread_equal(thread_, pthread_self())) {
+        pthread_setname_np(name.c_str());
+      }
+#else
       pthread_setname_np(thread_, std::string(name).c_str());
-#if XE_PLATFORM_ANDROID
-      SetAndroidPreApi26Name(name);
 #endif
+      StoreName(name);
     }
   }
 
+  // Keeps the name where the system cannot give it back: on Android before
+  // API 26, which lacks pthread_getname_np, and on Darwin, where a thread can
+  // name only itself.
+  void StoreName(const std::string_view name) const {
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_MAC
 #if XE_PLATFORM_ANDROID
-  void SetAndroidPreApi26Name(const std::string_view name) {
     if (android_pthread_getname_np_) {
       return;
     }
-    std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
-    xe::string_util::copy_truncating(android_pre_api_26_name_, name,
-                                     xe::countof(android_pre_api_26_name_));
-  }
 #endif
+    std::lock_guard<std::mutex> lock(stored_name_mutex_);
+    xe::string_util::copy_truncating(stored_name_, name,
+                                     xe::countof(stored_name_));
+#else
+    (void)name;
+#endif
+  }
 
-  uint32_t system_id() const { return static_cast<uint32_t>(thread_); }
+  uint32_t system_id() const {
+#if XE_PLATFORM_MAC
+    return static_cast<uint32_t>(pthread_mach_thread_np(thread_));
+#else
+    return static_cast<uint32_t>(thread_);
+#endif
+  }
 
+#if XE_PLATFORM_MAC
+  // Darwin has no call that binds a thread to processors: every thread may run
+  // on every online processor, and a requested mask cannot be applied.
+  uint64_t affinity_mask() const {
+    WaitStarted();
+    long processor_count = sysconf(_SC_NPROCESSORS_ONLN);
+    if (processor_count >= 64) {
+      return ~uint64_t(0);
+    }
+    return (uint64_t(1) << processor_count) - 1;
+  }
+
+  void set_affinity_mask(uint64_t mask) const {
+    WaitStarted();
+    XELOGW("Thread affinity mask {:X} cannot be applied on Darwin", mask);
+  }
+#else
   uint64_t affinity_mask() const {
     WaitStarted();
     cpu_set_t cpu_set;
@@ -776,6 +904,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     }
 #endif
   }
+#endif  // XE_PLATFORM_MAC
 
   int priority() const {
     WaitStarted();
@@ -788,11 +917,20 @@ class PosixCondition<Thread> final : public PosixConditionBase {
       }
       return param.sched_priority;
     }
+#if XE_PLATFORM_MAC
+    int policy;
+    sched_param param{};
+    if (pthread_getschedparam(thread_, &policy, &param) != 0) {
+      return -1;
+    }
+    return 16 + param.sched_priority - DarwinDefaultPriority();
+#else
     // When using nice values, map back to the SCHED_FIFO range (1-32)
     // so callers see a consistent priority space.
     int nice_val = getpriority(PRIO_PROCESS, tid_);
     // nice -19..19 → fifo 32..1
     return 16 - nice_val;
+#endif
   }
 
   void set_priority(int new_priority) const {
@@ -812,6 +950,19 @@ class PosixCondition<Thread> final : public PosixConditionBase {
         fifo_failed_ = true;
       }
     }
+#if XE_PLATFORM_MAC
+    // Darwin sets a thread's own priority under SCHED_OTHER; fifo 16 is the
+    // default priority, and each step moves one priority level.
+    int low = sched_get_priority_min(SCHED_OTHER);
+    int high = sched_get_priority_max(SCHED_OTHER);
+    sched_param param{};
+    param.sched_priority =
+        std::clamp(DarwinDefaultPriority() + new_priority - 16, low, high);
+    int result = pthread_setschedparam(thread_, SCHED_OTHER, &param);
+    if (result != 0) {
+      XELOGW("Unexpected error {} while setting SCHED_OTHER priority", result);
+    }
+#else
     // Fall back to nice values under SCHED_OTHER.
     // Map SCHED_FIFO range (1-32) to nice range (19 to -19).
     // Center: fifo 16 → nice 0.
@@ -826,7 +977,17 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     if (tid_ > 0) {
       setpriority(PRIO_PROCESS, tid_, nice_val);
     }
+#endif
   }
+
+#if XE_PLATFORM_MAC
+  // The priority Darwin gives a new SCHED_OTHER thread.
+  static int DarwinDefaultPriority() {
+    return (sched_get_priority_min(SCHED_OTHER) +
+            sched_get_priority_max(SCHED_OTHER)) /
+           2;
+  }
+#endif
 
   void QueueUserCallback(std::function<void()> callback) {
     WaitStarted();
@@ -837,6 +998,11 @@ class PosixCondition<Thread> final : public PosixConditionBase {
 #if XE_PLATFORM_ANDROID
     sigqueue(pthread_gettid_np(thread_),
              GetSystemSignal(SignalType::kThreadUserCallback), value);
+#elif XE_PLATFORM_MAC
+    // Darwin cannot queue a value with a signal; the handler runs on this
+    // thread, which is the current thread there.
+    (void)value;
+    pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
 #else
     pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback),
                      value);
@@ -867,9 +1033,9 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     if (suspend_count_ == 0 && state_ == State::kSuspended) {
       state_ = State::kRunning;
       // Post to the semaphore to wake the thread from WaitSuspended.
-      // sem_post is async-signal-safe, so this is safe even if called
+      // Posting is async-signal-safe, so this is safe even if called
       // from unusual contexts.
-      sem_post(&suspend_sem_);
+      suspend_sem_.Post();
     }
     state_signal_.notify_all();
     return true;
@@ -963,16 +1129,11 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   }
 
   /// Set state to suspended and wait until it is reset by another thread.
-  /// Uses sem_wait which is async-signal-safe, allowing this to be called
+  /// The wait is async-signal-safe, allowing this to be called
   /// from a signal handler (e.g., the SIGRTMIN suspend signal handler)
   /// without risking deadlock or heap corruption from non-reentrant
   /// mutex/condvar operations.
-  void WaitSuspended() {
-    int ret;
-    do {
-      ret = sem_wait(&suspend_sem_);
-    } while (ret == -1 && errno == EINTR);
-  }
+  void WaitSuspended() { suspend_sem_.Wait(); }
 
   void* native_handle() const override {
     return reinterpret_cast<void*>(thread_);
@@ -985,25 +1146,23 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     if (thread_) {
       pthread_join(thread_, nullptr);
     }
-    sem_destroy(&suspend_sem_);
   }
   pthread_t thread_;
   pid_t tid_ = 0;                     // Kernel TID for setpriority() fallback
   mutable bool fifo_failed_ = false;  // True after SCHED_FIFO was rejected
   bool signaled_;
   int exit_code_;
-  State state_;             // Protected by state_mutex_
-  uint32_t suspend_count_;  // Protected by state_mutex_
-  sem_t suspend_sem_;       // Async-signal-safe suspend/resume semaphore
+  State state_;                      // Protected by state_mutex_
+  uint32_t suspend_count_;           // Protected by state_mutex_
+  SignalSafeSemaphore suspend_sem_;  // Suspend/resume from signal handlers
   mutable std::mutex state_mutex_;
   mutable std::mutex callback_mutex_;
   mutable std::condition_variable state_signal_;
   std::function<void()> user_callback_;
-#if XE_PLATFORM_ANDROID
-  // Name accessible via name() on Android before API 26 which added
-  // pthread_getname_np.
-  mutable std::mutex android_pre_api_26_name_mutex_;
-  char android_pre_api_26_name_[16];
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_MAC
+  // The name name() returns where the system cannot (see StoreName).
+  mutable std::mutex stored_name_mutex_;
+  mutable char stored_name_[16] = {};
 #endif
 };
 
@@ -1315,7 +1474,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
   delete start_data;
 
   current_thread_ = thread;
-  thread->handle_.tid_ = static_cast<pid_t>(syscall(SYS_gettid));
+  thread->handle_.tid_ = static_cast<pid_t>(QuerySystemThreadId());
   {
     std::unique_lock lock(thread->handle_.state_mutex_);
     thread->handle_.state_ =
@@ -1400,12 +1559,15 @@ void Thread::Exit(int exit_code) {
 void set_name(const std::string_view name) {
   // pthread_setname_np rejects names longer than 15 characters instead of
   // truncating them.
-  pthread_setname_np(pthread_self(), std::string(name.substr(0, 15)).c_str());
-#if XE_PLATFORM_ANDROID
-  if (!android_pthread_getname_np_ && current_thread_) {
-    current_thread_->condition().SetAndroidPreApi26Name(name);
-  }
+  std::string truncated(name.substr(0, 15));
+#if XE_PLATFORM_MAC
+  pthread_setname_np(truncated.c_str());
+#else
+  pthread_setname_np(pthread_self(), truncated.c_str());
 #endif
+  if (current_thread_) {
+    current_thread_->condition().StoreName(truncated);
+  }
 }
 
 static void signal_handler(int signal, siginfo_t* info, void* context) {
@@ -1419,9 +1581,16 @@ static void signal_handler(int signal, siginfo_t* info, void* context) {
       current_thread_->WaitSuspended();
     } break;
     case SignalType::kThreadUserCallback: {
+#if XE_PLATFORM_MAC
+      if (!current_thread_) {
+        return;
+      }
+      auto p_thread = &current_thread_->condition();
+#else
       assert_not_null(info->si_value.sival_ptr);
       auto p_thread =
           static_cast<PosixCondition<Thread>*>(info->si_value.sival_ptr);
+#endif
       if (alertable_state_) {
         p_thread->CallUserCallback();
       }
