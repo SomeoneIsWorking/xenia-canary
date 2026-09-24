@@ -220,6 +220,17 @@ class BaseHeap {
   // Inserts a free block and coalesces with adjacent free blocks.
   void InsertFreeBlock(uint32_t start_page, uint32_t page_count);
 
+  // True when a host page holds several of this heap's pages, so the host can
+  // protect them only together.
+  bool SharesHostPages() const;
+
+  // Protects every host page overlapping guest pages [start_page, end_page],
+  // those pages taking protect and the rest of each host page keeping their
+  // committed protection; a host page gets the most permissive access any of
+  // its guest pages needs. Call before the page table records protect.
+  bool ProtectHostPages(uint32_t start_page, uint32_t end_page,
+                        uint32_t protect);
+
   Memory* memory_;
   uint8_t* membase_;
   HeapType heap_type_;

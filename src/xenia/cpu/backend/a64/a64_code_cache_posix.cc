@@ -15,9 +15,12 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/platform.h"
 #include "xenia/cpu/backend/a64/a64_stack_layout.h"
 
-// libgcc/libunwind APIs for registering DWARF .eh_frame unwind info.
+// libgcc/libunwind APIs for registering DWARF .eh_frame unwind info. libgcc
+// takes an .eh_frame section, which begins with its CIE; Darwin's libunwind
+// takes one FDE and refuses a CIE.
 extern "C" void __register_frame(void*);
 extern "C" void __deregister_frame(void*);
 
@@ -107,9 +110,10 @@ class PosixA64CodeCache : public A64CodeCache {
                  const EmitFunctionInfo& func_info, void* code_execute_address,
                  UnwindReservation unwind_reservation) override;
 
-  void InitializeUnwindEntry(uint8_t* unwind_entry_address,
-                             void* code_execute_address,
-                             const EmitFunctionInfo& func_info);
+  // Writes one CIE and one FDE; returns the FDE's offset from the entry.
+  size_t InitializeUnwindEntry(uint8_t* unwind_entry_address,
+                               void* code_execute_address,
+                               const EmitFunctionInfo& func_info);
 
   std::vector<void*> registered_frames_;
   uint32_t unwind_table_count_ = 0;
@@ -157,17 +161,23 @@ void PosixA64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
                                   const EmitFunctionInfo& func_info,
                                   void* code_execute_address,
                                   UnwindReservation unwind_reservation) {
-  InitializeUnwindEntry(unwind_reservation.entry_address, code_execute_address,
-                        func_info);
+  const size_t fde_offset = InitializeUnwindEntry(
+      unwind_reservation.entry_address, code_execute_address, func_info);
 
-  void* unwind_execute_address = unwind_reservation.entry_address -
-                                 generated_code_write_base_ +
-                                 generated_code_execute_base_;
-  __register_frame(unwind_execute_address);
-  registered_frames_.push_back(unwind_execute_address);
+  uint8_t* unwind_execute_address = unwind_reservation.entry_address -
+                                    generated_code_write_base_ +
+                                    generated_code_execute_base_;
+#if XE_PLATFORM_MAC
+  void* frame = unwind_execute_address + fde_offset;
+#else
+  (void)fde_offset;
+  void* frame = unwind_execute_address;
+#endif
+  __register_frame(frame);
+  registered_frames_.push_back(frame);
 }
 
-void PosixA64CodeCache::InitializeUnwindEntry(
+size_t PosixA64CodeCache::InitializeUnwindEntry(
     uint8_t* unwind_entry_address, void* code_execute_address,
     const EmitFunctionInfo& func_info) {
   // Compute execute-side base address of the unwind buffer.
@@ -355,6 +365,7 @@ void PosixA64CodeCache::InitializeUnwindEntry(
 
   assert_true(static_cast<size_t>(p - unwind_entry_address) <=
               kMaxUnwindInfoSize);
+  return static_cast<size_t>(fde_length_ptr - unwind_entry_address);
 }
 
 }  // namespace a64
