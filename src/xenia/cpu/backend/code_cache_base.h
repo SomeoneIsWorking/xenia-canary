@@ -95,6 +95,10 @@ class CodeCacheBase : public CodeCache {
       xe::memory::DeallocFixed(indirection_table_base_, kIndirectionTableSize,
                                xe::memory::DeallocationType::kRelease);
     }
+    if (jit_region_) {
+      xe::memory::FreeJitRegion(generated_code_execute_base_,
+                                kGeneratedCodeSize);
+    }
     if (mapping_ != xe::memory::kFileMappingHandleInvalid) {
       if (generated_code_write_base_ &&
           generated_code_write_base_ != generated_code_execute_base_) {
@@ -203,6 +207,7 @@ class CodeCacheBase : public CodeCache {
     uint8_t* code_execute_address;
     {
       auto global_lock = global_critical_region_.Acquire();
+      xe::memory::JitWriteScope write_scope;
 
       code_execute_address =
           generated_code_execute_base_ + generated_code_offset_;
@@ -279,7 +284,10 @@ class CodeCacheBase : public CodeCache {
       high_mark = generated_code_offset_;
     }
     EnsureCommitted(high_mark);
-    self().FillCode(write_address, length);
+    {
+      xe::memory::JitWriteScope write_scope;
+      self().FillCode(write_address, length);
+    }
     execute_address_out = ExecuteAddressOf(write_address);
     write_address_out = write_address;
     self().FlushCodeRange(execute_address_out, length);
@@ -295,7 +303,10 @@ class CodeCacheBase : public CodeCache {
       high_mark = generated_code_offset_;
     }
     EnsureCommitted(high_mark);
-    std::memcpy(data_address, data, length);
+    {
+      xe::memory::JitWriteScope write_scope;
+      std::memcpy(data_address, data, length);
+    }
     return uint32_t(uintptr_t(data_address));
   }
 
@@ -376,6 +387,10 @@ class CodeCacheBase : public CodeCache {
           kIndirectionTableBase + kIndirectionTableSize);
     }
 
+    if (xe::memory::IsJitRegionRequired()) {
+      return InitializeJitRegion() && FinishInitialize();
+    }
+
     file_name_ =
         fmt::format("xenia_code_cache_{}", Clock::QueryHostTickCount());
     mapping_ = xe::memory::CreateFileMappingHandle(
@@ -421,6 +436,31 @@ class CodeCacheBase : public CodeCache {
       }
     }
 
+    return FinishInitialize();
+  }
+
+  // One region, written and executed at the same address, that the host
+  // places anywhere; only a relocatable layout can use it.
+  bool InitializeJitRegion() {
+    if (!Derived::kRelocatableLayout) {
+      XELOGE(
+          "This host needs a JIT region, which a fixed-layout code cache "
+          "cannot use");
+      return false;
+    }
+    generated_code_execute_base_ =
+        static_cast<uint8_t*>(xe::memory::AllocJitRegion(kGeneratedCodeSize));
+    if (!generated_code_execute_base_) {
+      XELOGE("Unable to allocate the code cache's JIT region");
+      return false;
+    }
+    generated_code_write_base_ = generated_code_execute_base_;
+    jit_region_ = true;
+    return true;
+  }
+
+  bool FinishInitialize() {
+    constexpr bool kRelocatable = Derived::kRelocatableLayout;
     // Fixed-layout entries are absolute addresses below 4 GB.
     indirection_entry_base_ =
         kRelocatable ? reinterpret_cast<uintptr_t>(generated_code_execute_base_)
@@ -451,6 +491,8 @@ class CodeCacheBase : public CodeCache {
   uint8_t* generated_code_execute_base_ = nullptr;
   uint8_t* generated_code_write_base_ = nullptr;
   uintptr_t indirection_entry_base_ = 0;
+  // Generated code lives in a JIT region (IsJitRegionRequired), not a file.
+  bool jit_region_ = false;
   size_t generated_code_offset_ = 0;
   std::atomic<size_t> generated_code_commit_mark_ = {0};
   std::vector<std::pair<uint64_t, GuestFunction*>> generated_code_map_;
@@ -469,6 +511,10 @@ class CodeCacheBase : public CodeCache {
     do {
       old_commit_mark = generated_code_commit_mark_;
       if (high_mark <= old_commit_mark) {
+        break;
+      }
+      // A JIT region commits its pages as they are first touched.
+      if (jit_region_) {
         break;
       }
       new_commit_mark = old_commit_mark + 16_MiB;

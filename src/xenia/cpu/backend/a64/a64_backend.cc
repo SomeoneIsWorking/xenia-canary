@@ -751,9 +751,12 @@ uint32_t A64Backend::CreateGuestTrampoline(GuestTrampolineProc proc,
   const size_t offset = kGuestTrampolineSize * new_index;
   uint8_t* code = guest_trampoline_code_ + offset;
 
-  BuildGuestTrampoline(guest_trampoline_code_write_ + offset,
-                       reinterpret_cast<void*>(proc), userdata1, userdata2,
-                       reinterpret_cast<void*>(guest_to_host_thunk_));
+  {
+    xe::memory::JitWriteScope write_scope;
+    BuildGuestTrampoline(guest_trampoline_code_write_ + offset,
+                         reinterpret_cast<void*>(proc), userdata1, userdata2,
+                         reinterpret_cast<void*>(guest_to_host_thunk_));
+  }
   code_cache_->FlushCodeRange(code, kGuestTrampolineSize);
 
   uint32_t indirection_guest_addr =
