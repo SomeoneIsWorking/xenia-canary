@@ -41,7 +41,10 @@ class CodeCache {
   virtual void InvalidateGuestEntry(uint32_t guest_address) = 0;
 
   // Redirect a guest-address call slot without changing its translated body.
-  // Guest-to-guest direct and indirect calls both read this slot.
+  // Guest-to-guest direct and indirect calls both read this slot. A slot holds
+  // an entry encoding a host code address (EncodeGuestEntry), which is not
+  // necessarily the address itself.
+  virtual uint32_t EncodeGuestEntry(const void* host_code) const = 0;
   virtual uint32_t LookupGuestEntry(uint32_t guest_address) const = 0;
   virtual bool RedirectGuestEntry(uint32_t guest_address,
                                   uint32_t host_address) = 0;

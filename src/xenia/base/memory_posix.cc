@@ -109,7 +109,16 @@ PageAccess ToXeniaProtectFlags(const char* protection) {
   return PageAccess::kNoAccess;
 }
 
-bool IsWritableExecutableMemorySupported() { return true; }
+bool IsWritableExecutableMemorySupported() {
+#if XE_PLATFORM_MAC
+  // Apple silicon maps memory writable and executable at once only with
+  // MAP_JIT, which a shared mapping cannot take; code is written through a
+  // separate read-write view of the same pages instead.
+  return false;
+#else
+  return true;
+#endif
+}
 
 struct MappedFileRange {
   uintptr_t region_begin;

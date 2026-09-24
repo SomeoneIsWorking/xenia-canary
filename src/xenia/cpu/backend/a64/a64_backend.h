@@ -31,7 +31,8 @@ typedef void* (*HostToGuestThunk)(void* target, void* arg0, void* arg1);
 typedef void* (*GuestToHostThunk)(void* target, void* arg0, void* arg1);
 typedef void (*ResolveFunctionThunk)();
 
-// Place guest trampolines in an address range that the HV normally occupies.
+// Guest addresses of guest trampolines, in a range the HV normally occupies.
+// Their host code lives in the code cache.
 static constexpr uint32_t GUEST_TRAMPOLINE_BASE = 0x80000000;
 static constexpr uint32_t GUEST_TRAMPOLINE_END = 0x80040000;
 static constexpr uint32_t GUEST_TRAMPOLINE_MIN_LEN = 8;
@@ -71,6 +72,11 @@ struct A64BackendContext {
     uint64_t helper_scratch_u64s[8];
     uint32_t helper_scratch_u32s[16];
   };
+  // The code cache's indirection layout, adjacent for one LDP: a guest
+  // address's slot is indirection_table_origin + address, and a slot's entry
+  // denotes host code at indirection_entry_base + entry.
+  uint64_t indirection_table_origin;
+  uint64_t indirection_entry_base;
   ReserveHelper* reserve_helper_;
   uint64_t cached_reserve_value_;
   uint64_t* guest_tick_count;
@@ -164,7 +170,10 @@ class A64Backend : public Backend {
  private:
   alignas(64) ReserveHelper reserve_helper_;
   BitMap guest_trampoline_address_bitmap_;
-  uint8_t* guest_trampoline_memory_ = nullptr;
+  // Host code of the guest trampolines: executed from the first, written
+  // through the second.
+  uint8_t* guest_trampoline_code_ = nullptr;
+  uint8_t* guest_trampoline_code_write_ = nullptr;
 };
 
 }  // namespace a64

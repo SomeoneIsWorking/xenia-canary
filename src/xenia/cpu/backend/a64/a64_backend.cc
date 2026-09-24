@@ -555,35 +555,11 @@ static void BuildGuestTrampoline(uint8_t* buf, void* proc, void* userdata1,
 
 A64Backend::A64Backend() {
   code_cache_ = A64CodeCache::Create();
-
-  // Allocate executable memory for guest trampolines.
-  uint32_t base_address = 0x10000;
-  void* buf = nullptr;
-  while (base_address < 0x80000000) {
-    buf = memory::AllocFixed(
-        reinterpret_cast<void*>(static_cast<uintptr_t>(base_address)),
-        kGuestTrampolineSize * MAX_GUEST_TRAMPOLINES,
-        xe::memory::AllocationType::kReserveCommit,
-        xe::memory::PageAccess::kExecuteReadWrite);
-    if (!buf) {
-      base_address += 65536;
-    } else {
-      break;
-    }
-  }
-  xenia_assert(buf);
-  guest_trampoline_memory_ = reinterpret_cast<uint8_t*>(buf);
   guest_trampoline_address_bitmap_.Resize(MAX_GUEST_TRAMPOLINES);
 }
 
 A64Backend::~A64Backend() {
   ExceptionHandler::Uninstall(&ExceptionCallbackThunk, this);
-  if (guest_trampoline_memory_) {
-    memory::DeallocFixed(guest_trampoline_memory_,
-                         kGuestTrampolineSize * MAX_GUEST_TRAMPOLINES,
-                         memory::DeallocationType::kRelease);
-    guest_trampoline_memory_ = nullptr;
-  }
 }
 
 bool A64Backend::Initialize(Processor* processor) {
@@ -599,6 +575,15 @@ bool A64Backend::Initialize(Processor* processor) {
 
   // Expose the code cache to the base Backend class.
   Backend::code_cache_ = code_cache_.get();
+
+  // Guest trampolines are reached through indirection entries, so their host
+  // code must lie in the code cache.
+  void* trampoline_code;
+  void* trampoline_code_write;
+  code_cache_->ReserveHostCode(kGuestTrampolineSize * MAX_GUEST_TRAMPOLINES,
+                               trampoline_code, trampoline_code_write);
+  guest_trampoline_code_ = static_cast<uint8_t*>(trampoline_code);
+  guest_trampoline_code_write_ = static_cast<uint8_t*>(trampoline_code_write);
 
   // Set up machine info for the register allocator.
   machine_info_.supports_extended_load_store = true;
@@ -636,8 +621,8 @@ bool A64Backend::Initialize(Processor* processor) {
   }
 
   // Set the indirection table default to point at the resolve thunk.
-  code_cache_->set_indirection_default(
-      uint32_t(reinterpret_cast<uint64_t>(resolve_function_thunk_)));
+  code_cache_->set_indirection_default(code_cache_->EncodeGuestEntry(
+      reinterpret_cast<const void*>(resolve_function_thunk_)));
 
   // Commit the indirection table range used by guest trampolines so that
   // CreateGuestTrampoline can call AddIndirection without faulting.
@@ -723,6 +708,8 @@ void A64Backend::InitializeBackendContext(void* ctx) {
   a64_ctx->fpcr_vmx = DEFAULT_VMX_FPCR;
   a64_ctx->flags = (1U << kA64BackendNJMOn);  // NJM on by default
   a64_ctx->guest_tick_count = Clock::GetGuestTickCountPointer();
+  a64_ctx->indirection_table_origin = code_cache_->indirection_table_origin();
+  a64_ctx->indirection_entry_base = code_cache_->indirection_entry_base();
 
   // Allocate stackpoints for longjmp detection.
   if (cvars::a64_enable_host_guest_stack_synchronization) {
@@ -761,29 +748,20 @@ uint32_t A64Backend::CreateGuestTrampoline(GuestTrampolineProc proc,
   }
   xenia_assert(new_index != static_cast<size_t>(-1));
 
-  uint8_t* write_pos =
-      &guest_trampoline_memory_[kGuestTrampolineSize * new_index];
+  const size_t offset = kGuestTrampolineSize * new_index;
+  uint8_t* code = guest_trampoline_code_ + offset;
 
-  BuildGuestTrampoline(write_pos, reinterpret_cast<void*>(proc), userdata1,
-                       userdata2,
+  BuildGuestTrampoline(guest_trampoline_code_write_ + offset,
+                       reinterpret_cast<void*>(proc), userdata1, userdata2,
                        reinterpret_cast<void*>(guest_to_host_thunk_));
-
-  // Flush instruction cache for the new trampoline code.
-#if XE_PLATFORM_WIN32
-  FlushInstructionCache(GetCurrentProcess(), write_pos, kGuestTrampolineSize);
-#else
-  __builtin___clear_cache(
-      reinterpret_cast<char*>(write_pos),
-      reinterpret_cast<char*>(write_pos + kGuestTrampolineSize));
-#endif
+  code_cache_->FlushCodeRange(code, kGuestTrampolineSize);
 
   uint32_t indirection_guest_addr =
       GUEST_TRAMPOLINE_BASE +
       (static_cast<uint32_t>(new_index) * GUEST_TRAMPOLINE_MIN_LEN);
 
-  code_cache()->AddIndirection(
-      indirection_guest_addr,
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(write_pos)));
+  code_cache_->AddIndirection(indirection_guest_addr,
+                              code_cache_->EncodeGuestEntry(code));
 
   return indirection_guest_addr;
 }

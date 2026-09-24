@@ -386,9 +386,8 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   ForgetFpcrMode();
   // Cached callers must observe callee invalidation through this slot.
   if (code_cache_->has_indirection_table()) {
-    // Load host code address from indirection table.
-    mov(w16, function->address());
-    ldr(w9, ptr(x16, static_cast<uint32_t>(0)));
+    mov(w16, function->address());  // the resolve thunk reads w16
+    LoadIndirectionTarget();
   } else {
     // Fallback: resolve at runtime.
     mov(x0, x20);  // context
@@ -417,6 +416,18 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   }
 }
 
+void A64Emitter::LoadIndirectionTarget() {
+  // x16 holds the zero-extended guest address. x9 = the slot's origin and
+  // x17 = the entry base, then x9 = the host code the slot's entry denotes.
+  static_assert(offsetof(A64BackendContext, indirection_entry_base) ==
+                offsetof(A64BackendContext, indirection_table_origin) + 8);
+  ldp(x9, x17,
+      ptr(x19, static_cast<int32_t>(
+                   offsetof(A64BackendContext, indirection_table_origin))));
+  ldr(w9, ptr(x9, x16));
+  add(x9, x17, x9);
+}
+
 void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
   ForgetFpcrMode();
   auto target_w = WReg(reg_index);
@@ -432,8 +443,7 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
   // Load host code address from indirection table.
   if (code_cache_->has_indirection_table()) {
     mov(w16, target_w);  // w16 = guest address (also used by resolve thunk)
-    ldr(w9, ptr(x16, static_cast<uint32_t>(
-                         0)));  // w9 = host code from indirection table
+    LoadIndirectionTarget();
   } else {
     // Fallback: resolve at runtime.
     mov(w16, target_w);

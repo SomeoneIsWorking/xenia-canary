@@ -119,6 +119,9 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
 
   void Call(const hir::Instr* instr, GuestFunction* function);
   void CallIndirect(const hir::Instr* instr, int reg_index);
+  // Loads x9 with the host code of the indirection slot of the guest address
+  // in w16. Clobbers x17.
+  void LoadIndirectionTarget();
   void CallExtern(const hir::Instr* instr, const Function* function);
   void CallNative(void* fn);
   void CallNativeSafe(void* fn);
